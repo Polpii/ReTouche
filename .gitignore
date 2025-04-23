@@ -3,6 +3,9 @@
 /pianoTranscription
 /iamusica
 /for_elise
+/public/*.mp4
+/public/ryuichi/*.mov
+
 
 # dependencies
 /node_modules
