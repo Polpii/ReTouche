@@ -1,0 +1,51 @@
+/* app/global.css */
+body, html {
+  margin: 0;
+  padding: 0;
+  font-family: sans-serif;
+  background-color: #f0f0f0;
+}
+
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+/* Styles pour PerspectiveTransform */
+.perspective-container {
+  position: relative;
+}
+.control-point {
+  width: 10px;
+  height: 10px;
+  background-color: #fff;
+  border: 1px solid #000;
+  border-radius: 50%;
+  position: absolute;
+  cursor: pointer;
+}
+
+/* Styles pour SectionEditor */
+.section-editor {
+  border: 1px solid #ccc;
+  padding: 1rem;
+  background-color: #fff;
+  margin-top: 1rem;
+}
+
+.section-item {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.section-item input {
+  margin: 0 0.5rem;
+}
+
+.section-item .color-indicator {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  margin-left: auto;
+}

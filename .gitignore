@@ -1,4 +1,8 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+/exp2_skeleton_pianist
+/pianoTranscription
+/iamusica
+/for_elise
 
 # dependencies
 /node_modules
@@ -39,3 +43,5 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+.vercel
