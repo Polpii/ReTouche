@@ -1,9 +1,11 @@
 /* app/global.css */
 body, html {
+  height: 100%;
   margin: 0;
   padding: 0;
   font-family: sans-serif;
   background-color: #f0f0f0;
+  overflow: hidden;
 }
 
 a {

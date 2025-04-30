@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Rnd } from "react-rnd";
 import PerspectiveTransform, { Points } from "../../components/PerspectiveTransform";
+import VideoPortal from "../../components/VideoPortal";
 
 interface Crop {
   x: number;
@@ -16,6 +17,13 @@ const VIDEO_WIDTH = 640;
 const VideoSetupPage: React.FC = () => {
   const videoRefFull = useRef<HTMLVideoElement>(null);
   const videoRefTransform = useRef<HTMLVideoElement>(null);
+  
+  // Références pour le deuxième écran
+  const secondVideoRefFull = useRef<HTMLVideoElement>(null);
+  const secondVideoRefTransform = useRef<HTMLVideoElement>(null);
+  
+  // État pour gérer la disponibilité du deuxième écran
+  const [secondScreenEnabled, setSecondScreenEnabled] = useState(false);
 
   const [stream, setStream] = useState<MediaStream | null>(null);
 
@@ -47,6 +55,15 @@ const VideoSetupPage: React.FC = () => {
         if (videoRefTransform.current) {
           videoRefTransform.current.srcObject = mediaStream;
         }
+        // Préparer aussi le stream pour le deuxième écran si activé
+        if (secondScreenEnabled) {
+          if (secondVideoRefFull.current) {
+            secondVideoRefFull.current.srcObject = mediaStream;
+          }
+          if (secondVideoRefTransform.current) {
+            secondVideoRefTransform.current.srcObject = mediaStream;
+          }
+        }
       })
       .catch((err) => console.error("Webcam error:", err));
 
@@ -55,7 +72,59 @@ const VideoSetupPage: React.FC = () => {
         stream.getTracks().forEach((track) => track.stop());
       }
     };
-  }, []);
+  }, [secondScreenEnabled]);
+
+  // Synchroniser la lecture des vidéos entre les écrans
+  useEffect(() => {
+    const syncVideos = () => {
+      if (videoRefFull.current && secondVideoRefFull.current) {
+        // Synchroniser la lecture
+        if (videoRefFull.current.paused) {
+          secondVideoRefFull.current.pause();
+        } else {
+          secondVideoRefFull.current.currentTime = videoRefFull.current.currentTime;
+          secondVideoRefFull.current.play().catch(err => console.error("Erreur de lecture sur le second écran:", err));
+        }
+      }
+      
+      if (videoRefTransform.current && secondVideoRefTransform.current) {
+        // Synchroniser la lecture transformée
+        if (videoRefTransform.current.paused) {
+          secondVideoRefTransform.current.pause();
+        } else {
+          secondVideoRefTransform.current.currentTime = videoRefTransform.current.currentTime;
+          secondVideoRefTransform.current.play().catch(err => console.error("Erreur de lecture transformée sur le second écran:", err));
+        }
+      }
+    };
+    
+    // Ajouter des événements de synchronisation
+    if (videoRefFull.current) {
+      videoRefFull.current.addEventListener('play', syncVideos);
+      videoRefFull.current.addEventListener('pause', syncVideos);
+      videoRefFull.current.addEventListener('seeked', syncVideos);
+    }
+    
+    if (videoRefTransform.current) {
+      videoRefTransform.current.addEventListener('play', syncVideos);
+      videoRefTransform.current.addEventListener('pause', syncVideos);
+      videoRefTransform.current.addEventListener('seeked', syncVideos);
+    }
+    
+    return () => {
+      if (videoRefFull.current) {
+        videoRefFull.current.removeEventListener('play', syncVideos);
+        videoRefFull.current.removeEventListener('pause', syncVideos);
+        videoRefFull.current.removeEventListener('seeked', syncVideos);
+      }
+      
+      if (videoRefTransform.current) {
+        videoRefTransform.current.removeEventListener('play', syncVideos);
+        videoRefTransform.current.removeEventListener('pause', syncVideos);
+        videoRefTransform.current.removeEventListener('seeked', syncVideos);
+      }
+    };
+  }, [secondScreenEnabled]);
 
   // Au moment de sauvegarder, on enregistre :
   // - Les valeurs normalisées du crop et des points (par rapport aux dimensions réelles du flux)
@@ -177,8 +246,8 @@ const VideoSetupPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Bouton de sauvegarde */}
-      <div style={{ textAlign: "left", marginTop: "1rem" }}>
+      {/* Boutons de contrôle */}
+      <div style={{ textAlign: "left", marginTop: "1rem", display: "flex", gap: "10px", alignItems: "center" }}>
         <button
           onClick={handleDone}
           style={{
@@ -192,7 +261,64 @@ const VideoSetupPage: React.FC = () => {
         >
           Done
         </button>
+        
+        <label style={{ display: "flex", alignItems: "center", gap: "5px", cursor: "pointer" }}>
+          <input 
+            type="checkbox" 
+            checked={secondScreenEnabled}
+            onChange={(e) => setSecondScreenEnabled(e.target.checked)} 
+          />
+          Activer le deuxième écran
+        </label>
       </div>
+      
+      {/* Deuxième écran (affichage dans une fenêtre séparée) */}
+      {secondScreenEnabled && (
+        <VideoPortal width={1280} height={720}>
+          {/* Zone de la vidéo complète */}
+          <div style={{ position: "relative", width: "100%", height: "50%" }}>
+            <video
+              ref={secondVideoRefFull}
+              autoPlay
+              style={{ width: "100%", height: "100%", objectFit: "contain" }}
+            />
+          </div>
+          
+          {/* Zone avec la vidéo transformée */}
+          <div style={{ 
+            position: "relative", 
+            width: "100%", 
+            height: "50%" 
+          }}>
+            <div
+              style={{
+                position: "absolute",
+                left: crop.x,
+                top: crop.y,
+                width: crop.width,
+                height: crop.height,
+                overflow: "visible",
+              }}
+            >
+              <PerspectiveTransform
+                points={perspectivePoints}
+                editable={false}
+              >
+                <video
+                  ref={secondVideoRefTransform}
+                  autoPlay
+                  style={{
+                    position: "absolute",
+                    left: -crop.x,
+                    top: -crop.y,
+                    width: VIDEO_WIDTH,
+                  }}
+                />
+              </PerspectiveTransform>
+            </div>
+          </div>
+        </VideoPortal>
+      )}
     </>
   );
 };

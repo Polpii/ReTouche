@@ -57,6 +57,9 @@ export default function TrainingPage() {
   // 👇 Hook placé à l’intérieur du composant
   const [videoDelayMs, setVideoDelayMs] = useState(250);
   
+  // Référence pour limiter la fréquence des sauvegardes de calibration
+  const lastCalibrationSaveTime = useRef<number>(0);
+  
   // Ajout des états manquants
   const [loading, setLoading] = useState(false);
   const [videoLoading, setVideoLoading] = useState(true);
@@ -114,6 +117,14 @@ export default function TrainingPage() {
 
   // Nouvel état pour le dropdown
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  
+  // Nouvel état pour gérer la sauvegarde Firebase
+  const [saveToFirebase, setSaveToFirebase] = useState(false);
+  
+  // Fonction utilitaire pour vérifier si les sauvegardes Firebase sont autorisées
+  const shouldSaveToFirebase = () => {
+    return saveToFirebase || currentLearnerName !== "Polpii";
+  };
   
   // Fonction utilitaire de formatage
   const formatDisplay = (recordingName: string) => {
@@ -1055,6 +1066,15 @@ const stopPerformanceRecording = () => {
   const handleSavePerformance = async () => {
     if (!performanceVideoURL || !currentLearnerName) return;
     
+    // Si l'option "Save to Firebase" est désactivée, ne pas uploader vers Firebase
+    if (!shouldSaveToFirebase()) {
+      console.log("Firebase save désactivé, aucune donnée n'a été sauvegardée");
+      // Fermer la vidéo de performance simplement
+      setPerformanceVideoURL(null);
+      setShowPerformancePlayback(false);
+      return;
+    }
+    
     const dateObj = new Date();
     const day = String(dateObj.getDate()).padStart(2, "0");
     const month = String(dateObj.getMonth() + 1).padStart(2, "0");
@@ -1143,7 +1163,14 @@ const stopPerformanceRecording = () => {
 
   // Update the onPointsChange handler to use the new handleCalibrationPointsChange function
   const handleCalibrationPointsChange = (newPoints: Points) => {
-    if (selectedSound) {
+    if (!shouldSaveToFirebase()) {
+      console.log("Points de calibration non sauvegardés (Firebase désactivé)");
+      return; // Ne pas sauvegarder si Firebase est désactivé
+    }
+    
+    // Limiter le nombre de sauvegardes avec un debounce
+    if (selectedSound && Date.now() - lastCalibrationSaveTime.current > 2000) {
+      lastCalibrationSaveTime.current = Date.now();
       const updatedSound = { 
         ...selectedSound, 
         calibration: { 
@@ -1961,12 +1988,18 @@ const playRecordedMidi = () => {
       )}
       {/* Barre supérieure */}
       <div style={{ position: "relative", marginBottom: "1rem" }}>
-        <div style={{ position: "absolute", left: 0, top: 0 }}>
+        <div style={{ position: "absolute", left: 0, top: 0, display: "flex", alignItems: "center", gap: "1rem" }}>
           <Link href="/learner/select-sound">
             <button style={{ backgroundColor: "#0070f3", color: "#fff", padding: "0.5rem 1rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "0.8rem" }}>
               Back
             </button>
           </Link>
+          {currentLearnerName === "Polpii" && (
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <IOSSwitch checked={saveToFirebase} onChange={() => setSaveToFirebase(!saveToFirebase)} />
+              <span style={{ fontSize: "0.8rem" }}>Save to Firebase</span>
+            </div>
+          )}
         </div>
         <h4 style={{ textAlign: "center", fontSize: "1.5rem", margin: 0, marginBottom: "4rem" }}>{selectedSound?.title}</h4>
       </div>

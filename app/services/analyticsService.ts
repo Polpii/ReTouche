@@ -320,10 +320,12 @@ function formatSessionForDisplay(session: TrainingSession): any {
 // Envoyer les données vers Firebase
 async function flushEvents(isFinal: boolean = false): Promise<void> {
     if (!currentSession || !sessionId || !currentSession.learnerName) return;
-    
+    const session = currentSession;
+    const sid = sessionId;
+
     try {
         // Créer une référence au document principal de l'apprenant
-        const learnerDocRef = doc(db, ANALYTICS_COLLECTION, currentSession.learnerName);
+        const learnerDocRef = doc(db, ANALYTICS_COLLECTION, session.learnerName);
         
         // Vérifier si le document de l'apprenant existe déjà
         const learnerDoc = await getDoc(learnerDocRef);
@@ -335,7 +337,7 @@ async function flushEvents(isFinal: boolean = false): Promise<void> {
         }
         
         // Formater la session courante
-        const formattedSession = formatSessionForDisplay(currentSession);
+        const formattedSession = formatSessionForDisplay(session);
         
         // Ajouter les informations finales si nécessaire
         if (isFinal) {
@@ -344,26 +346,25 @@ async function flushEvents(isFinal: boolean = false): Promise<void> {
             });
             
             // Ajouter les événements bruts seulement à la fin pour l'analyse détaillée
-            // Facultatif: si vous avez besoin de l'historique complet des événements
-            // formattedSession.events = currentSession.events;
+            // formattedSession.events = session.events;
         }
         
         // Mettre à jour ou créer l'entrée de session
-        sessions[sessionId] = formattedSession;
+        sessions[sid] = formattedSession;
         
         // Mettre à jour le document avec les sessions
         await setDoc(learnerDocRef, {
-            name: currentSession.learnerName,
+            name: session.learnerName,
             sessions: sessions,
             updatedAt: serverTimestamp(),
         }, { merge: true });
         
-        // Réinitialiser les événements après l'envoi
+        // Réinitialiser les événements après l'envoi si ce n'est pas la fin
         if (!isFinal) {
-            currentSession.events = [];
+            session.events = [];
         }
         
-        console.log(`Analytics: flushed ${isFinal ? 'final' : 'interim'} data for ${currentSession.learnerName}`);
+        console.log(`Analytics: flushed ${isFinal ? 'final' : 'interim'} data for ${session.learnerName}`);
     } catch (error) {
         console.error("Error saving analytics data:", error);
     } finally {
@@ -371,7 +372,7 @@ async function flushEvents(isFinal: boolean = false): Promise<void> {
         bufferTimeout = null;
         
         // Reprogrammer si ce n'est pas la fin
-        if (!isFinal && currentSession) {
+        if (!isFinal) {
             scheduleFlush();
         }
     }

@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useSoundContext, Sound, Section } from "../../../context/SoundContext";
 import AudioTimelineEditor, { Marker } from "../../../../components/AudioTimelineEditor";
+import VideoPortal from "../../../../components/VideoPortal";
 
 export default function EditorPage() {
   const params = useParams();
@@ -18,6 +19,10 @@ export default function EditorPage() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Second screen state
+  const [secondScreenEnabled, setSecondScreenEnabled] = useState(false);
+  const secondScreenAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // Calcul de la hauteur de l'éditeur audio en fonction de la hauteur de la fenêtre.
   // On suppose ici que le header (Home, Pause, titre) et la ligne de sections occupent environ 160px.
@@ -120,6 +125,10 @@ export default function EditorPage() {
       currentSection = sections.find((section) => section.start > current);
       if (currentSection) {
         audioRef.current.currentTime = currentSection.start;
+        // Synchroniser le deuxième écran
+        if (secondScreenEnabled && secondScreenAudioRef.current) {
+          secondScreenAudioRef.current.currentTime = currentSection.start;
+        }
       } else {
         return;
       }
@@ -128,11 +137,19 @@ export default function EditorPage() {
       .play()
       .then(() => {
         startCursorInterval();
+        // Synchroniser le deuxième écran
+        if (secondScreenEnabled && secondScreenAudioRef.current) {
+          secondScreenAudioRef.current.play().catch(err => console.error("Second screen playback error", err));
+        }
       })
       .catch((err) => console.error("Playback error", err));
     const interval = setInterval(() => {
       if (audioRef.current && audioRef.current.currentTime >= currentSection!.end) {
         audioRef.current.pause();
+        // Arrêter aussi le son sur le deuxième écran
+        if (secondScreenEnabled && secondScreenAudioRef.current) {
+          secondScreenAudioRef.current.pause();
+        }
         clearInterval(interval);
         stopCursorInterval();
       }
@@ -144,15 +161,29 @@ export default function EditorPage() {
       audioRef.current.src = sound.audioUrl;
       audioRef.current.load();
       audioRef.current.currentTime = section.start;
+      // Synchroniser le deuxième écran
+      if (secondScreenEnabled && secondScreenAudioRef.current) {
+        secondScreenAudioRef.current.src = sound.audioUrl;
+        secondScreenAudioRef.current.load();
+        secondScreenAudioRef.current.currentTime = section.start;
+      }
       audioRef.current
         .play()
         .then(() => {
           startCursorInterval();
+          // Synchroniser le deuxième écran
+          if (secondScreenEnabled && secondScreenAudioRef.current) {
+            secondScreenAudioRef.current.play().catch(err => console.error("Second screen playback error", err));
+          }
         })
         .catch((err) => console.error("Playback error", err));
       const interval = setInterval(() => {
         if (audioRef.current && audioRef.current.currentTime >= section.end) {
           audioRef.current.pause();
+          // Arrêter aussi le son sur le deuxième écran
+          if (secondScreenEnabled && secondScreenAudioRef.current) {
+            secondScreenAudioRef.current.pause();
+          }
           clearInterval(interval);
           stopCursorInterval();
         }
@@ -163,8 +194,17 @@ export default function EditorPage() {
   const handlePause = () => {
     if (audioRef.current) {
       audioRef.current.pause();
+      // Synchroniser le deuxième écran
+      if (secondScreenEnabled && secondScreenAudioRef.current) {
+        secondScreenAudioRef.current.pause();
+      }
       stopCursorInterval();
     }
+  };
+
+  // Fonction pour activer/désactiver le deuxième écran
+  const toggleSecondScreen = () => {
+    setSecondScreenEnabled(!secondScreenEnabled);
   };
 
   return (
@@ -238,6 +278,21 @@ export default function EditorPage() {
               >
                 ▶
               </button>
+              <button
+                onClick={toggleSecondScreen}
+                style={{
+                  padding: "0.5rem 1rem",
+                  backgroundColor: secondScreenEnabled ? "#28a745" : "#6c757d",
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: "4px",
+                  fontSize: "0.9rem",
+                  cursor: "pointer",
+                  marginLeft: "1rem"
+                }}
+              >
+                {secondScreenEnabled ? "Désactiver 2ème écran" : "Activer 2ème écran"}
+              </button>
             </div>
             <h1 style={{ margin: 0, fontSize: "1.5rem", textAlign: "center" }}>
               Editing: {sound.title}
@@ -260,6 +315,33 @@ export default function EditorPage() {
           </div>
           {sound.audioUrl && (
             <audio ref={audioRef} src={sound.audioUrl} style={{ width: "100%" }} />
+          )}
+
+          {/* Portail vers le deuxième écran */}
+          {secondScreenEnabled && (
+            <VideoPortal width={1280} height={720}>
+              <div style={{ width: "100%", height: "100%", position: "relative", background: "#000" }}>
+                {/* Titre en haut de la fenêtre */}
+                <div style={{ 
+                  position: "absolute", 
+                  top: "10px", 
+                  left: "0", 
+                  width: "100%", 
+                  textAlign: "center",
+                  color: "white",
+                  fontSize: "24px",
+                  fontWeight: "bold",
+                  textShadow: "2px 2px 4px rgba(0,0,0,0.5)"
+                }}>
+                  {sound.title}
+                </div>
+                
+                {/* Audio pour le deuxième écran (invisible mais fonctionnel) */}
+                {sound.audioUrl && (
+                  <audio ref={secondScreenAudioRef} src={sound.audioUrl} style={{ display: "none" }} />
+                )}
+              </div>
+            </VideoPortal>
           )}
         </>
       ) : (

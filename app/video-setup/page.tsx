@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Rnd } from "react-rnd";
 import PerspectiveTransform, { Points } from "../../components/PerspectiveTransform";
 import { saveCalibrationConfig, CalibrationConfig } from "../services/calibrationService";
+import VideoPortal from "../../components/VideoPortal";
 
 interface Crop {
   x: number;
@@ -18,7 +19,13 @@ const VideoSetupPage: React.FC = () => {
   const videoRefFull = useRef<HTMLVideoElement>(null);
   const videoRefTransform = useRef<HTMLVideoElement>(null);
 
+  // Références pour le deuxième écran
+  const secondScreenVideoRefFull = useRef<HTMLVideoElement>(null);
+  const secondScreenVideoRefTransform = useRef<HTMLVideoElement>(null);
+
   const [stream, setStream] = useState<MediaStream | null>(null);
+  // État pour activer/désactiver le deuxième écran
+  const [showSecondScreen, setShowSecondScreen] = useState(false);
 
   // État du crop (en pixels)
   const [crop, setCrop] = useState<Crop>({
@@ -42,11 +49,19 @@ const VideoSetupPage: React.FC = () => {
       .getUserMedia({ video: true })
       .then((mediaStream) => {
         setStream(mediaStream);
+        // Premier écran
         if (videoRefFull.current) {
           videoRefFull.current.srcObject = mediaStream;
         }
         if (videoRefTransform.current) {
           videoRefTransform.current.srcObject = mediaStream;
+        }
+        // Deuxième écran
+        if (secondScreenVideoRefFull.current) {
+          secondScreenVideoRefFull.current.srcObject = mediaStream;
+        }
+        if (secondScreenVideoRefTransform.current) {
+          secondScreenVideoRefTransform.current.srcObject = mediaStream;
         }
       })
       .catch((err) => console.error("Webcam error:", err));
@@ -56,7 +71,7 @@ const VideoSetupPage: React.FC = () => {
         stream.getTracks().forEach((track) => track.stop());
       }
     };
-  }, []);
+  }, [stream]);
 
   // Au moment de sauvegarder, on enregistre :
   // - Les valeurs normalisées du crop et des points (par rapport aux dimensions réelles du flux)
@@ -127,6 +142,11 @@ const VideoSetupPage: React.FC = () => {
     }
   };
 
+  // Fonction pour activer/désactiver le deuxième écran
+  const toggleSecondScreen = () => {
+    setShowSecondScreen(!showSecondScreen);
+  };
+
   return (
     <>
       {/* Zone de la vidéo complète avec affichage du crop */}
@@ -190,8 +210,22 @@ const VideoSetupPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Bouton de sauvegarde */}
-      <div style={{ textAlign: "left", marginTop: "1rem" }}>
+      {/* Bouton pour activer le deuxième écran */}
+      <div style={{ textAlign: "center", marginTop: "1rem" }}>
+        <button
+          onClick={toggleSecondScreen}
+          style={{
+            backgroundColor: showSecondScreen ? "#28a745" : "#6c757d",
+            color: "#fff",
+            border: "none",
+            padding: "0.5rem 1rem",
+            borderRadius: "4px",
+            cursor: "pointer",
+            marginRight: "1rem",
+          }}
+        >
+          {showSecondScreen ? "Désactiver 2ème écran" : "Activer 2ème écran"}
+        </button>
         <button
           onClick={handleDone}
           style={{
@@ -206,6 +240,47 @@ const VideoSetupPage: React.FC = () => {
           Done
         </button>
       </div>
+
+      {/* Portail vers le deuxième écran */}
+      {showSecondScreen && (
+        <VideoPortal width={1280} height={720}>
+          <div style={{ width: "100%", height: "100%", position: "relative" }}>
+            {/* Vidéo complète sur le second écran */}
+            <div style={{ position: "relative", width: "100%" }}>
+              <video ref={secondScreenVideoRefFull} autoPlay style={{ width: "100%" }} />
+            </div>
+            
+            {/* Vidéo transformée sur le second écran */}
+            <div
+              style={{
+                position: "absolute",
+                left: crop.x,
+                top: crop.y,
+                width: crop.width,
+                height: crop.height,
+                overflow: "visible",
+              }}
+            >
+              <PerspectiveTransform
+                points={perspectivePoints}
+                editable={false} // La calibration se fait seulement sur le premier écran
+                enableGroupDrag={false}
+              >
+                <video
+                  ref={secondScreenVideoRefTransform}
+                  autoPlay
+                  style={{
+                    position: "absolute",
+                    left: -crop.x,
+                    top: -crop.y,
+                    width: "100%",
+                  }}
+                />
+              </PerspectiveTransform>
+            </div>
+          </div>
+        </VideoPortal>
+      )}
     </>
   );
 };
