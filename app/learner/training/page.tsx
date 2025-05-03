@@ -13,13 +13,21 @@ import { uploadVideo, uploadMidiData, addRecordingToLearner } from "../../servic
 import ContentMedia from "../../../components/ContentMedia";
 import { getProxiedUrl } from '../../utils/proxyUrl';
 import { startTrainingSession, endTrainingSession, trackEvent, trackMetric, trackSectionMetric, trackSectionListeningTime, TrainingEventTypes } from "@/app/services/analyticsService";
-import { isSecondScreenAvailable, sendVideoToSecondScreen, clearSecondScreen, TransformConfig } from "../../services/secondScreenService";
+import {
+  sendVideoToSecondScreen,
+  clearSecondScreen,
+  closeSecondScreen,
+  setupPerspectiveChangeListener,
+  PerspectivePoints
+} from "../../services/secondScreenService";
+
 
 // Interface pour un événement MIDI
 interface MidiEvent {
   data: number[];
   timestamp: number;
 }
+
 
 /** Petit composant Switch façon iOS */
 function IOSSwitch({ checked, onChange }: { checked: boolean; onChange: () => void; }) {
@@ -70,30 +78,6 @@ export default function TrainingPage() {
   const { sounds, updateSound } = useSoundContext();
   const selectedSound = sounds.find((s) => s.id === soundId);
 
-  // État pour gérer le deuxième écran
-  const [secondScreenAvailable, setSecondScreenAvailable] = useState(false);
-
-  // Vérifier si le deuxième écran est disponible au chargement
-  useEffect(() => {
-    const checkSecondScreen = () => {
-      const available = isSecondScreenAvailable();
-      setSecondScreenAvailable(available);
-    };
-    
-    // Vérifier immédiatement
-    checkSecondScreen();
-    
-    // Puis vérifier périodiquement
-    const interval = setInterval(checkSecondScreen, 2000);
-    
-    // Nettoyage
-    return () => {
-      clearInterval(interval);
-      // Vider le contenu du second écran quand on quitte la page
-      clearSecondScreen();
-    };
-  }, []);
-
   // Initialisation de la session d’analyse au chargement
   useEffect(() => {
     if (currentLearnerName && soundId && selectedSound) {
@@ -134,12 +118,6 @@ export default function TrainingPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const performanceVideoRef = useRef<HTMLVideoElement | null>(null);
   const loopVideoRef = useRef<HTMLVideoElement | null>(null); // Une référence distincte pour le looper
-  
-  // Ajouter des références pour les vidéos sur le second écran
-  const secondScreenVideoRef = useRef<HTMLVideoElement | null>(null);
-  const secondScreenPerformanceVideoRef = useRef<HTMLVideoElement | null>(null);
-  const secondScreenLoopVideoRef = useRef<HTMLVideoElement | null>(null);
-  const secondScreenRecordedVideoRef = useRef<HTMLVideoElement | null>(null);
 
   // Vidéos enregistrées du profil (enregistrées via le bouton blanc)
   const [recordedVideos, setRecordedVideos] = useState<RecordedVideo[]>([]);
@@ -1038,65 +1016,69 @@ const stopPerformanceRecording = () => {
 
   // Transformation du bouton pause en bouton stop
   const handleStop = () => {
-    // Annuler tous les timeouts en attente
+    // 1) Réinitialise la vidéo principale et la renvoie (pause + t=0) sur l’écran secondaire
+    if (videoRef.current && calibrationConfig && absoluteCrop && absolutePoints && absoluteVideoOffset) {
+      // Met la vidéo par défaut en pause et la remet au début
+      videoRef.current.pause();
+      videoRef.current.currentTime = 0;
+      // Envoie ce même élément sur le second écran (clone + synchro)
+      sendVideoToSecondScreen(videoRef.current, {
+        crop: absoluteCrop,
+        perspectivePoints: absolutePoints,
+        videoOffset: absoluteVideoOffset,
+        baseWidth: 640,
+        baseHeight: (absoluteCrop.height / absoluteCrop.width) * 640
+      });
+    }
+  
+    // 2) Annule tous les timeouts pour s’assurer qu’il n’y a plus de play/pause/seek programmés
     scheduledTimeouts.current.forEach((timeout) => clearTimeout(timeout));
     scheduledTimeouts.current = [];
-    // Masquer immédiatement l’overlay
+  
+    // 3) Masque toute overlay ou playback de performance en cours
     setOverlayMessage(null);
-    // Arrêter la vidéo principale et celle enregistrée
-    if (videoRef.current) {
-      videoRef.current.pause();
-    }
+    setShowPerformancePlayback(false);
+    setSelectedRecordedName("");
+  
+    // 4) Met la vidéo enregistrée (dropdown) en pause
     if (recordedVideoRef.current) {
       recordedVideoRef.current.pause();
     }
-    // Envoyer "all notes off" via MIDI pour stopper le piano
+  
+    // 5) Stoppe toute lecture MIDI en cours sur le Disklavier
     if (midiOutputRef.current) {
-      midiOutputRef.current.send([0xB0, 64, 0]);
+      // All Notes Off
       midiOutputRef.current.send([0xB0, 123, 0]);
+      // Reset controllers
+      midiOutputRef.current.send([0xB0, 121, 0]);
     }
-    // Arrêter l’enregistrement général s’il est en cours
+  
+    // 6) Stoppe et ré-initialise les enregistrements (général, performance, loop)
     if (isRecording && mediaRecorder) {
       mediaRecorder.stop();
-      recordStream?.getTracks().forEach(track => track.stop());
+      recordStream?.getTracks().forEach((t) => t.stop());
       setIsRecording(false);
       setMediaRecorder(null);
       setRecordStream(null);
     }
-    // Arrêter le performance recording s’il est en cours
     if (isPerformanceRecording && performanceRecorderRef.current) {
       performanceRecorderRef.current.stop();
-      performanceStreamRef.current?.getTracks().forEach((track) => track.stop());
+      performanceStreamRef.current?.getTracks().forEach((t) => t.stop());
       setIsPerformanceRecording(false);
     }
-    // Masquer la vidéo enregistrée et réafficher la vidéo de base
-    setShowPerformancePlayback(false);
-    setSelectedRecordedName("");
-    // Arrêter également le looper s’il est en cours
     if (isLooping) {
-      if (loopRecorderRef.current) {
-        loopRecorderRef.current.stop();
-      }
-      if (loopStreamRef.current) {
-        loopStreamRef.current.getTracks().forEach(track => track.stop());
-      }
+      // arrête la loop en cours
+      if (loopRecorderRef.current) loopRecorderRef.current.stop();
+      if (loopStreamRef.current) loopStreamRef.current.getTracks().forEach((t) => t.stop());
       setIsLooping(false);
-      // Réinitialiser le ref pour la pédale
       isLoopingRef.current = false;
     }
-    
-    // Arrêter la lecture des loops
+    // Stoppe aussi toute lecture de loop
     stopLoopPlayback();
+  
+    // 7) Remet le handler MIDI global (pour les futures sessions)
     if (midiInputRef.current) {
       midiInputRef.current.onmidimessage = globalMidiHandler;
-    }
-    
-    // Vider le deuxième écran et réafficher la vidéo principale
-    if (secondScreenAvailable) {
-      clearSecondScreen();
-      if (videoRef.current) {
-        secondScreenVideoRef.current = sendVideoToSecondScreen(videoRef.current);
-      }
     }
   };
 
@@ -1256,6 +1238,7 @@ const stopPerformanceRecording = () => {
     // Nettoyer l’élément au démontage
     return () => {
       document.body.removeChild(preloadVideo);
+      closeSecondScreen();
     };
   }, [selectedSound?.videoUrl]);
 
@@ -1428,7 +1411,7 @@ const startLoopPlayback = async (layers: any[]) => {
       // Trier par timestamp pour s’assurer qu’ils sont joués dans l’ordre
       allMidiEvents.sort((a, b) => a.timestamp - b.timestamp);
       
-      console.log(`Total d’événements MIDI à jouer: ${allMidiEvents.length}`);
+      console.log(`Total d'événements MIDI à jouer: ${allMidiEvents.length}`);
       
       // Calculer la durée totale de la plus longue séquence
       const maxDuration = allMidiEvents.length > 0 
@@ -1905,148 +1888,58 @@ const playRecordedMidi = () => {
 };
 // ------------------------------------------------------------------
 
-// Effet pour videoRef.current, ajouter l'envoi au deuxième écran et s'assurer qu'il fonctionne
+
+  // État pour stocker les points de perspective pour le second écran
+  const [secondScreenPerspectivePoints, setSecondScreenPerspectivePoints] = useState<Points | null>(null);
+  
+  // Référence pour le conteneur du second écran
+  const secondScreenContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Configurer l'écouteur pour les changements de perspective depuis la fenêtre secondaire
   useEffect(() => {
-    if (videoRef.current && secondScreenAvailable) {
-      console.log("[Training] Sending main video to second screen:", videoRef.current);
+    // Configurer l'écouteur d'événements pour les changements de points
+    const cleanup = setupPerspectiveChangeListener((points) => {
+      console.log("Points updated from second screen:", points);
       
-      // Attendre que la vidéo soit chargée
-      const handleVideoReady = () => {
-        console.log("[Training] Main video is loaded and ready to send to second screen");
-        secondScreenVideoRef.current = sendVideoToSecondScreen(videoRef.current);
-      };
+      // Mettre à jour les points locaux
+      setRecordedVideoPerspectivePoints(points as Points);
       
-      // Vérifier si la vidéo est déjà chargée
-      if (videoRef.current.readyState >= 2) {
-        console.log("[Training] Video already loaded, sending immediately");
-        handleVideoReady();
-      } else {
-        // Sinon attendre l'événement loadeddata
-        console.log("[Training] Video not loaded yet, adding loadeddata listener");
-        videoRef.current.addEventListener('loadeddata', handleVideoReady);
-        
-        // Cleanup
-        return () => {
-          if (videoRef.current) {
-            videoRef.current.removeEventListener('loadeddata', handleVideoReady);
+      // Sauvegarder dans Firebase si autorisé
+      if (shouldSaveToFirebase() && currentLearnerName && soundId) {
+        savePositionConfig(
+          currentLearnerName,
+          soundId,
+          {
+            position: recordedVideoContainerPos,
+            perspectivePoints: points as Points
           }
-        };
+        ).then(() => console.log("Position config saved to Firebase"))
+          .catch(err => console.error("Failed to save position config:", err));
       }
-    }
-  }, [videoRef.current, secondScreenAvailable, mainVideoReady]);
+    });
+    
+    // Nettoyer l'écouteur à la destruction du composant
+    return cleanup;
+  }, [currentLearnerName, soundId, recordedVideoContainerPos]);
 
-  // Effet pour videoRef.current, envoyer au deuxième écran avec la configuration de transformation
-  useEffect(() => {
-    if (videoRef.current && secondScreenAvailable && calibrationConfig) {
-      console.log("[Training] Sending main video to second screen with calibration:", calibrationConfig);
-      
-      // Attendre que la vidéo soit chargée
-      const handleVideoReady = () => {
-        // Préparer la configuration de transformation pour le deuxième écran
-        const transformConfig: TransformConfig = {
-          perspectivePoints: selectedSound?.calibration?.points || {
-            topLeft: { x: 0, y: 0 },
-            topRight: { x: 640, y: 0 },
-            bottomRight: { x: 640, y: 360 },
-            bottomLeft: { x: 0, y: 360 }
-          },
-          videoOffset: absoluteVideoOffset || { x: 0, y: 0 },
-          crop: absoluteCrop || { x: 0, y: 0, width: 640, height: 360 },
-          baseWidth: calibrationConfig.baseWidth || 640,
-          baseHeight: calibrationConfig.baseHeight || 360
-        };
-        
-        console.log("[Training] Main video is loaded, sending to second screen with transform", transformConfig);
-        secondScreenVideoRef.current = sendVideoToSecondScreen(videoRef.current, transformConfig);
-      };
-      
-      // Vérifier si la vidéo est déjà chargée
-      if (videoRef.current.readyState >= 2) {
-        console.log("[Training] Video already loaded, sending immediately");
-        handleVideoReady();
-      } else {
-        // Sinon attendre l'événement loadeddata
-        console.log("[Training] Video not loaded yet, adding loadeddata listener");
-        videoRef.current.addEventListener('loadeddata', handleVideoReady);
-        
-        // Cleanup
-        return () => {
-          if (videoRef.current) {
-            videoRef.current.removeEventListener('loadeddata', handleVideoReady);
-          }
-        };
-      }
-    }
-  }, [videoRef.current, secondScreenAvailable, calibrationConfig, mainVideoReady, selectedSound?.calibration]);
-
-  // Effet pour performanceVideoRef - envoi au deuxième écran avec la transformation
-  useEffect(() => {
-    if (performanceVideoRef.current && secondScreenAvailable && showPerformancePlayback && calibrationConfig) {
-      // Configuration pour la vidéo de performance
-      const transformConfig: TransformConfig = {
-        perspectivePoints: recordedVideoPerspectivePoints || {
-          topLeft: { x: 0, y: 0 },
-          topRight: { x: 640, y: 0 },
-          bottomRight: { x: 640, y: 360 },
-          bottomLeft: { x: 0, y: 360 }
-        },
-        position: recordedVideoContainerPos,
-        videoOffset: absoluteVideoOffset || { x: 0, y: 0 },
-        crop: absoluteCrop || { x: 0, y: 0, width: 640, height: 360 },
-        baseWidth: calibrationConfig.baseWidth || 640,
-        baseHeight: calibrationConfig.baseHeight || 360
-      };
-      
-      console.log("[Training] Performance video ready, sending to second screen with transform");
-      secondScreenPerformanceVideoRef.current = sendVideoToSecondScreen(performanceVideoRef.current, transformConfig);
-    }
-  }, [performanceVideoRef.current, secondScreenAvailable, showPerformancePlayback, recordedVideoPerspectivePoints, recordedVideoContainerPos, calibrationConfig]);
-
-  // Effet pour loopVideoRef
-  useEffect(() => {
-    if (loopVideoRef.current && secondScreenAvailable && isLoopPlaying && calibrationConfig) {
-      // Configuration pour la vidéo de loop
-      const transformConfig: TransformConfig = {
-        perspectivePoints: recordedVideoPerspectivePoints || {
-          topLeft: { x: 0, y: 0 },
-          topRight: { x: 640, y: 0 },
-          bottomRight: { x: 640, y: 360 },
-          bottomLeft: { x: 0, y: 360 }
-        },
-        position: recordedVideoContainerPos,
-        videoOffset: absoluteVideoOffset || { x: 0, y: 0 },
-        crop: absoluteCrop || { x: 0, y: 0, width: 640, height: 360 },
-        baseWidth: calibrationConfig.baseWidth || 640,
-        baseHeight: calibrationConfig.baseHeight || 360
-      };
-      
-      console.log("[Training] Loop video ready, sending to second screen with transform");
-      secondScreenLoopVideoRef.current = sendVideoToSecondScreen(loopVideoRef.current, transformConfig);
-    }
-  }, [loopVideoRef.current, secondScreenAvailable, isLoopPlaying, recordedVideoPerspectivePoints, recordedVideoContainerPos, calibrationConfig]);
-
-  // Effet pour recordedVideoRef (vidéos sélectionnées dans le dropdown)
-  useEffect(() => {
-    if (recordedVideoRef.current && secondScreenAvailable && selectedRecordedName && calibrationConfig) {
-      // Configuration pour la vidéo enregistrée
-      const transformConfig: TransformConfig = {
-        perspectivePoints: recordedVideoPerspectivePoints || {
-          topLeft: { x: 0, y: 0 },
-          topRight: { x: 640, y: 0 },
-          bottomRight: { x: 640, y: 360 },
-          bottomLeft: { x: 0, y: 360 }
-        },
-        position: recordedVideoContainerPos,
-        videoOffset: absoluteVideoOffset || { x: 0, y: 0 },
-        crop: absoluteCrop || { x: 0, y: 0, width: 640, height: 360 },
-        baseWidth: calibrationConfig.baseWidth || 640,
-        baseHeight: calibrationConfig.baseHeight || 360
-      };
-      
-      console.log("[Training] Recorded video selected, sending to second screen with transform");
-      secondScreenRecordedVideoRef.current = sendVideoToSecondScreen(recordedVideoRef.current, transformConfig);
-    }
-  }, [recordedVideoRef.current, secondScreenAvailable, selectedRecordedName, recordedVideoPerspectivePoints, recordedVideoContainerPos, calibrationConfig]);
+  // Fonction pour envoyer une vidéo au second écran avec la transformation de perspective
+  const sendVideoWithPerspective = (videoElement: HTMLVideoElement | null) => {
+    if (!videoElement || !absoluteCrop || !absoluteVideoOffset) return;
+    
+    sendVideoToSecondScreen(videoElement, {
+      crop: absoluteCrop,
+      perspectivePoints: recordedVideoPerspectivePoints || {
+        topLeft: { x: 0, y: 0 },
+        topRight: { x: absoluteCrop.width, y: 0 },
+        bottomRight: { x: absoluteCrop.width, y: absoluteCrop.height },
+        bottomLeft: { x: 0, y: absoluteCrop.height }
+      },
+      videoOffset: absoluteVideoOffset,
+      baseWidth: 640,
+      baseHeight: (absoluteCrop.height / absoluteCrop.width) * 640,
+      editable // Passer l'état editable pour afficher les points sur le second écran
+    });
+  };
 
   if (loading) {
     return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}>
@@ -2056,24 +1949,6 @@ const playRecordedMidi = () => {
 
   return (
     <div style={{ padding: "1rem", fontFamily: "Arial, sans-serif", width: "100%" }}>
-      {/* ─── Indicateur de deuxième écran ────────────────────────────────── */}
-      {secondScreenAvailable && (
-        <div style={{
-          position: "fixed",
-          top: "1rem",
-          left: "1rem",
-          background: "rgba(0,128,0,0.7)",
-          padding: "0.35rem 0.75rem",
-          borderRadius: "4px",
-          zIndex: 2000,
-          color: "#fff",
-          fontSize: "0.85rem"
-        }}>
-          Deuxième écran connecté
-        </div>
-      )}
-      {/* ──────────────────────────────────────────────────────────────── */}
-
       {/* ─── Contrôle du delay vidéo ────────────────────────────────── */}
       <div style={{
         position: "fixed",
@@ -2167,16 +2042,18 @@ const playRecordedMidi = () => {
                       height: "auto",
                     }}
                     onLoadedData={() => {
+                      if (performanceVideoRef.current) sendVideoWithPerspective(performanceVideoRef.current);
                       // S’assurer que le délai VIDEO_DELAY_MS est respecté
                       setTimeout(() => {
-                        if (performanceVideoRef.current) {
-                          performanceVideoRef.current.play().catch(err => 
-                            console.error("Erreur lors de la lecture de la vidéo locale:", err)
-                          );
-                        }
+                        if (performanceVideoRef.current) performanceVideoRef.current.play().catch(err => 
+                          console.error("Erreur lors de la lecture de la vidéo locale:", err)
+                        );
                       }, videoDelayMs); // Utiliser la constante VIDEO_DELAY_MS
                     }}
-                    onEnded={() => setShowPerformancePlayback(false)}
+                    onEnded={() => {
+                      clearSecondScreen();
+                      setShowPerformancePlayback(false);
+                    }}
                   />
                 ) : null}
               </PerspectiveTransform>
@@ -2466,15 +2343,18 @@ const playRecordedMidi = () => {
                         height: "auto",
                       }}
                       onLoadedData={() => {
+                        const el = loopVideoRef.current;
+                        if (el) sendVideoWithPerspective(el);
                         // Démarre vidéo + MIDI en une fois, sans délai
                         loopVideoRef.current?.play().catch(console.error)
                         startLoopMidiPlayback()
                       }}
                       onEnded={() => {
+                        clearSecondScreen();
                         // Quand la vidéo s’arrête, couper le piano
                         if (!isLoopPlaying) {
-                          midiOutputRef.current?.send([0xB0, 123, 0])
-                          midiOutputRef.current?.send([0xB0, 121, 0])
+                          midiOutputRef.current?.send([0xB0,123,0])
+                          midiOutputRef.current?.send([0xB0,121,0])
                           return
                         }
                         // Si on est toujours en mode loop, relance vidéo+MIDI en synchro
@@ -2497,6 +2377,7 @@ const playRecordedMidi = () => {
                         height: "auto",
                       }}
                       onLoadedData={() => {
+                        if (performanceVideoRef.current) sendVideoWithPerspective(performanceVideoRef.current);
                         setTimeout(() => {
                           performanceVideoRef.current?.play().catch(err =>
                             console.error("Erreur lors de la lecture de la vidéo locale:", err)
@@ -2504,6 +2385,7 @@ const playRecordedMidi = () => {
                         }, videoDelayMs);
                       }}
                       onEnded={() => {
+                        clearSecondScreen();
                         if (!isLoopPlaying) {
                           setShowPerformancePlayback(false);
                         }
@@ -2517,11 +2399,15 @@ const playRecordedMidi = () => {
                     path={performanceVideoURL}
                     type="video"
                     onLoadedData={() => {
+                      if (performanceVideoRef.current) sendVideoWithPerspective(performanceVideoRef.current);
                       setTimeout(() => {
                         performanceVideoRef.current?.play();
                       }, videoDelayMs);
                     }}
-                    onEnded={() => setShowPerformancePlayback(false)}
+                    onEnded={() => {
+                      clearSecondScreen();
+                      setShowPerformancePlayback(false);
+                    }}
                     style={{
                       position: "absolute",
                       left: -absoluteVideoOffset.x,
@@ -2536,7 +2422,7 @@ const playRecordedMidi = () => {
           </div>
         </Rnd>
       ) : null}
-      {/* Conteneur pour la vidéo de base (vidéo principale) */}
+      {/* Conteneur pour la vidéo par défaut (vidéo enregistrée depuis la liste déroulante) */}
       {!videoLoading && (
         <div
           id="defaultVideoContainer"
@@ -2566,6 +2452,9 @@ const playRecordedMidi = () => {
               ref={videoRef}
               path={selectedSound?.videoUrl || ""}
               type="video"
+              onLoadedData={() => {
+                if (videoRef.current) sendVideoWithPerspective(videoRef.current);
+              }}
               playsInline
               onTimeUpdate={(e: React.SyntheticEvent<HTMLVideoElement>) => setCurrentTime(e.currentTarget.currentTime)}
               style={{ width: "100%", height: "auto" }}
@@ -2622,12 +2511,14 @@ const playRecordedMidi = () => {
                         height: "auto",
                       }}
                       onLoadedData={() => {
+                        if (recordedVideoRef.current) sendVideoWithPerspective(recordedVideoRef.current);
                         setTimeout(() => {
                           recordedVideoRef.current?.play();
                           if (isLoop) playRecordedMidi();
                         }, videoDelayMs);
                       }}
                       onEnded={() => {
+                        clearSecondScreen();
                         if (isLoop) {
                           // remet au début et reboucle
                           recordedVideoRef.current!.currentTime = 0;

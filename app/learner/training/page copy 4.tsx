@@ -8,14 +8,17 @@ import PerspectiveTransform, { Points } from "../../../components/PerspectiveTra
 import AudioTimelineReadOnly, { Section } from "../../../components/AudioTimelineReadOnly";
 import { Rnd } from "react-rnd";
 import { Midi } from "@tonejs/midi";
-import { getCalibrationConfig, savePositionConfig, getPositionConfig } from "../../services/calibrationService";
+import { getCalibrationConfig, CalibrationConfig, savePositionConfig, getPositionConfig } from "../../services/calibrationService";
 import { uploadVideo, uploadMidiData, addRecordingToLearner } from "../../services/mediaService";
 import ContentMedia from "../../../components/ContentMedia";
 import { getProxiedUrl } from '../../utils/proxyUrl';
 import { startTrainingSession, endTrainingSession, trackEvent, trackMetric, trackSectionMetric, trackSectionListeningTime, TrainingEventTypes } from "@/app/services/analyticsService";
+import {
+  sendVideoToSecondScreen,
+  clearSecondScreen,
+  closeSecondScreen
+} from "../../services/secondScreenService";
 
-// Add at top of file to track secondary window
-let videoWindow: Window | null = null;
 
 // Interface pour un événement MIDI
 interface MidiEvent {
@@ -427,17 +430,19 @@ export default function TrainingPage() {
     
     setCurrentSectionIndex(selectedSound.sections.indexOf(section));
     setOverlayMessage("Pay attention");
-    // start MIDI in sync with video after delay
-    setTimeout(() => {
-      playMidiSection(section);
-    }, videoDelayMs);
-    openVideoPage(selectedSound.videoUrl, 'default', section.start, section.end);
-    lastVideoArgs.current = { videoUrl: selectedSound.videoUrl, type: 'default' };
+    if (videoRef.current) videoRef.current.currentTime = section.start;
+    playSection(section);
+    playMidiSection(section);
     const sectionDurationMs = ((section.end - section.start) * 1000) / playbackSpeed;
+    
+    // Enregistrer le temps d'écoute pour cette section
+    trackSectionListeningTime(sectionIndex, sectionDurationMs);
+    
     scheduleTimeout(() => {
       setOverlayMessage("Your turn now");
+      trackEvent(TrainingEventTypes.SECTION_PERFORM, { sectionIndex });
       startPerformanceRecording(section);
-    }, videoDelayMs + sectionDurationMs);
+    }, sectionDurationMs);
   };
 
   const handlePlayButton = () => {
@@ -489,9 +494,6 @@ const handleListenPreviousButton = () => {
             }, event.timestamp);
           });
         }
-        // Open performance video manually
-        openVideoPage(storedVideoURL, 'performance');
-        lastVideoArgs.current = { videoUrl: storedVideoURL!, type: 'performance' };
       } else {
         console.error("L’URL n’est pas une URL locale valide");
       }
@@ -753,8 +755,7 @@ const stopPerformanceRecording = () => {
 };
 
   // Calibration (gestion des paramètres de transformation) - mise à jour pour Firebase
-  // calibrationConfig may contain only normalizedPoints (or more), use Partial to avoid missing property errors
-  const [calibrationConfig, setCalibrationConfig] = useState<Partial<import("../../services/calibrationService").CalibrationConfig> | null>(null);
+  const [calibrationConfig, setCalibrationConfig] = useState<CalibrationConfig | null>(null);
 
   useEffect(() => {
     async function loadCalibration() {
@@ -820,7 +821,6 @@ const stopPerformanceRecording = () => {
     }
   }, [performanceVideoURL]);
 
-  // Compute absolute cropping and points only if all calibrationConfig fields are present
   let absoluteCrop: { x: number; y: number; width: number; height: number } | null = null;
   let absolutePoints: {
     topLeft: { x: number; y: number };
@@ -829,14 +829,7 @@ const stopPerformanceRecording = () => {
     bottomLeft: { x: number; y: number };
   } | null = null;
   let absoluteVideoOffset: { x: number; y: number } | null = null;
-  if (
-    calibrationConfig
-    && typeof calibrationConfig.baseWidth === 'number'
-    && typeof calibrationConfig.baseHeight === 'number'
-    && calibrationConfig.normalizedCrop
-    && calibrationConfig.normalizedPoints
-    && calibrationConfig.normalizedVideoOffset
-  ) {
+  if (calibrationConfig) {
     const displayWidth = 640;
     const scaleFactor = displayWidth / calibrationConfig.baseWidth;
     const displayHeight = calibrationConfig.baseHeight * scaleFactor;
@@ -1021,63 +1014,69 @@ const stopPerformanceRecording = () => {
 
   // Transformation du bouton pause en bouton stop
   const handleStop = () => {
-    // Annuler tous les timeouts en attente
+    // 1) Réinitialise la vidéo principale et la renvoie (pause + t=0) sur l’écran secondaire
+    if (videoRef.current && calibrationConfig && absoluteCrop && absolutePoints && absoluteVideoOffset) {
+      // Met la vidéo par défaut en pause et la remet au début
+      videoRef.current.pause();
+      videoRef.current.currentTime = 0;
+      // Envoie ce même élément sur le second écran (clone + synchro)
+      sendVideoToSecondScreen(videoRef.current, {
+        crop: absoluteCrop,
+        perspectivePoints: absolutePoints,
+        videoOffset: absoluteVideoOffset,
+        baseWidth: 640,
+        baseHeight: (absoluteCrop.height / absoluteCrop.width) * 640
+      });
+    }
+  
+    // 2) Annule tous les timeouts pour s’assurer qu’il n’y a plus de play/pause/seek programmés
     scheduledTimeouts.current.forEach((timeout) => clearTimeout(timeout));
     scheduledTimeouts.current = [];
-    // Masquer immédiatement l’overlay
+  
+    // 3) Masque toute overlay ou playback de performance en cours
     setOverlayMessage(null);
-    // Arrêter la vidéo principale et celle enregistrée
-    if (videoRef.current) {
-      videoRef.current.pause();
-    }
+    setShowPerformancePlayback(false);
+    setSelectedRecordedName("");
+  
+    // 4) Met la vidéo enregistrée (dropdown) en pause
     if (recordedVideoRef.current) {
       recordedVideoRef.current.pause();
     }
-    // Envoyer "all notes off" via MIDI pour stopper le piano
+  
+    // 5) Stoppe toute lecture MIDI en cours sur le Disklavier
     if (midiOutputRef.current) {
-      midiOutputRef.current.send([0xB0, 64, 0]);
+      // All Notes Off
       midiOutputRef.current.send([0xB0, 123, 0]);
+      // Reset controllers
+      midiOutputRef.current.send([0xB0, 121, 0]);
     }
-    // Arrêter l’enregistrement général s’il est en cours
+  
+    // 6) Stoppe et ré-initialise les enregistrements (général, performance, loop)
     if (isRecording && mediaRecorder) {
       mediaRecorder.stop();
-      recordStream?.getTracks().forEach(track => track.stop());
+      recordStream?.getTracks().forEach((t) => t.stop());
       setIsRecording(false);
       setMediaRecorder(null);
       setRecordStream(null);
     }
-    // Arrêter le performance recording s’il est en cours
     if (isPerformanceRecording && performanceRecorderRef.current) {
       performanceRecorderRef.current.stop();
-      performanceStreamRef.current?.getTracks().forEach((track) => track.stop());
+      performanceStreamRef.current?.getTracks().forEach((t) => t.stop());
       setIsPerformanceRecording(false);
     }
-    // Masquer la vidéo enregistrée et réafficher la vidéo de base
-    setShowPerformancePlayback(false);
-    setSelectedRecordedName("");
-    // Arrêter également le looper s’il est en cours
     if (isLooping) {
-      if (loopRecorderRef.current) {
-        loopRecorderRef.current.stop();
-      }
-      if (loopStreamRef.current) {
-        loopStreamRef.current.getTracks().forEach(track => track.stop());
-      }
+      // arrête la loop en cours
+      if (loopRecorderRef.current) loopRecorderRef.current.stop();
+      if (loopStreamRef.current) loopStreamRef.current.getTracks().forEach((t) => t.stop());
       setIsLooping(false);
-      // Réinitialiser le ref pour la pédale
       isLoopingRef.current = false;
     }
-    
-    // Arrêter la lecture des loops
+    // Stoppe aussi toute lecture de loop
     stopLoopPlayback();
+  
+    // 7) Remet le handler MIDI global (pour les futures sessions)
     if (midiInputRef.current) {
       midiInputRef.current.onmidimessage = globalMidiHandler;
-    }
-    // Send stop command to secondary video window
-    if (videoWindow && !videoWindow.closed) {
-      videoWindow.postMessage({ type: 'stopAll' }, window.location.origin);
-      // Reset to default video in secondary window
-      videoWindow.postMessage({ type: 'resetDefault' }, window.location.origin);
     }
   };
 
@@ -1237,6 +1236,7 @@ const stopPerformanceRecording = () => {
     // Nettoyer l’élément au démontage
     return () => {
       document.body.removeChild(preloadVideo);
+      closeSecondScreen();
     };
   }, [selectedSound?.videoUrl]);
 
@@ -1409,7 +1409,7 @@ const startLoopPlayback = async (layers: any[]) => {
       // Trier par timestamp pour s’assurer qu’ils sont joués dans l’ordre
       allMidiEvents.sort((a, b) => a.timestamp - b.timestamp);
       
-      console.log(`Total d’événements MIDI à jouer: ${allMidiEvents.length}`);
+      console.log(`Total d'événements MIDI à jouer: ${allMidiEvents.length}`);
       
       // Calculer la durée totale de la plus longue séquence
       const maxDuration = allMidiEvents.length > 0 
@@ -1886,55 +1886,6 @@ const playRecordedMidi = () => {
 };
 // ------------------------------------------------------------------
 
-// Helper to open videos on a separate window/tab
-const openVideoPage = (videoUrl: string, type: string, sectionStart?: number, sectionEnd?: number) => {
-  // preserve previous container position
-  const existing = JSON.parse(sessionStorage.getItem('mirrorFugueVideoConfig') || '{}');
-  const prevPos = existing.containerPos || { x: 0, y: 0 };
-  const config = { soundId, videoUrl, type, sectionStart, sectionEnd, containerPos: prevPos, calibrationConfig, absoluteCrop, absolutePoints, absoluteVideoOffset, videoDelayMs, isLooping, loopLayers, editable };
-  sessionStorage.setItem('mirrorFugueVideoConfig', JSON.stringify(config));
-  const dualScreenLeft = window.screenLeft ?? window.screenX;
-  const dualScreenTop = window.screenTop ?? window.screenY;
-  const screenWidth = window.innerWidth || document.documentElement.clientWidth;
-  const configWidth = absoluteCrop?.width || 640;
-  const configHeight = absoluteCrop?.height || 360;
-  const left = dualScreenLeft + screenWidth;
-  const top = dualScreenTop;
-  const url = '/learner/training/video';
-  // Reuse existing window if open
-  if (!videoWindow || videoWindow.closed) {
-    videoWindow = window.open(url, '_blank', `width=${configWidth},height=${configHeight},left=${left},top=${top}`);
-  } else {
-    // Window already open: just bring to front, don't reload
-    videoWindow.focus();
-  }
-  // Send message to secondary window: either play a section or load & play a full video
-  if (videoWindow && !videoWindow.closed) {
-    if (typeof sectionStart === 'number' && typeof sectionEnd === 'number') {
-      videoWindow.postMessage({ type: 'playSection', sectionStart, sectionEnd, editable }, window.location.origin);
-    } else {
-      videoWindow.postMessage({ type: 'loadAndPlay', videoUrl }, window.location.origin);
-    }
-  }
-};
-
-// Close secondary window when leaving training page
-// Removed closing of secondary window to reuse the same window across mounts
-
-// Track last opened video URL and type for refreshing when editable changes
-const lastVideoArgs = useRef<{ videoUrl: string; type: string } | null>(null);
-
-// Helper to update editable flag in config and notify video window
-const updateVideoConfigEditable = (newEditable: boolean) => {
-  const item = sessionStorage.getItem('mirrorFugueVideoConfig');
-  if (!item) return;
-  const cfg = JSON.parse(item);
-  cfg.editable = newEditable;
-  sessionStorage.setItem('mirrorFugueVideoConfig', JSON.stringify(cfg));
-  if (videoWindow && !videoWindow.closed) {
-    videoWindow.postMessage({ type: 'updateConfig', editable: newEditable }, window.location.origin);
-  }
-};
 
   if (loading) {
     return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}>
@@ -2037,16 +1988,20 @@ const updateVideoConfigEditable = (newEditable: boolean) => {
                       height: "auto",
                     }}
                     onLoadedData={() => {
+                      if (performanceVideoRef.current) sendVideoToSecondScreen(performanceVideoRef.current, {
+                        crop: absoluteCrop!, perspectivePoints: absolutePoints!, videoOffset: absoluteVideoOffset!, baseWidth: 640, baseHeight: (absoluteCrop!.height/absoluteCrop!.width)*640
+                      });
                       // S’assurer que le délai VIDEO_DELAY_MS est respecté
                       setTimeout(() => {
-                        if (performanceVideoRef.current) {
-                          performanceVideoRef.current.play().catch(err => 
-                            console.error("Erreur lors de la lecture de la vidéo locale:", err)
-                          );
-                        }
+                        if (performanceVideoRef.current) performanceVideoRef.current.play().catch(err => 
+                          console.error("Erreur lors de la lecture de la vidéo locale:", err)
+                        );
                       }, videoDelayMs); // Utiliser la constante VIDEO_DELAY_MS
                     }}
-                    onEnded={() => setShowPerformancePlayback(false)}
+                    onEnded={() => {
+                      clearSecondScreen();
+                      setShowPerformancePlayback(false);
+                    }}
                   />
                 ) : null}
               </PerspectiveTransform>
@@ -2104,7 +2059,7 @@ const updateVideoConfigEditable = (newEditable: boolean) => {
             Save Position
           </button>
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <IOSSwitch checked={editable} onChange={() => { const ne = !editable; setEditable(ne); updateVideoConfigEditable(ne); }} />
+            <IOSSwitch checked={editable} onChange={() => setEditable(!editable)} />
             <span style={{ fontSize: "0.5rem" }}>Edit Transform</span>
           </div>
         </>
@@ -2139,13 +2094,7 @@ const updateVideoConfigEditable = (newEditable: boolean) => {
           <input type="range" min="0.10" max="2" step="0.1" value={playbackSpeed} onChange={(e) => {
             const newSpeed = parseFloat(e.target.value);
             setPlaybackSpeed(newSpeed);
-            // Apply speed to main video
-            if (videoRef.current) videoRef.current.playbackRate = newSpeed;
-            // Broadcast speed change to secondary window
-            if (videoWindow && !videoWindow.closed) {
-              videoWindow.postMessage({ type: 'updateSpeed', newSpeed }, window.location.origin);
-            }
-            // Analytics event
+            // Suivi analytique du changement de vitesse
             trackEvent(TrainingEventTypes.PLAYBACK_SPEED_CHANGE, { oldSpeed: playbackSpeed, newSpeed });
           }} list="tickmarks" style={{ cursor: "pointer" }} />
           <datalist id="tickmarks">
@@ -2183,7 +2132,7 @@ const updateVideoConfigEditable = (newEditable: boolean) => {
                       borderBottom: "1px solid #eee",
                       whiteSpace: "nowrap"
                     }}
-                    onClick={() => { setSelectedRecordedName(rv.name); setDropdownOpen(false); openVideoPage(rv.blobUrl, 'recorded'); lastVideoArgs.current = { videoUrl: rv.blobUrl, type: 'recorded' }; }}
+                    onClick={() => { setSelectedRecordedName(rv.name); setDropdownOpen(false); }}
                   >
                     <span onClick={(e) => { e.stopPropagation(); handleDeleteRecording(rv.name); }} style={{ cursor: "pointer", color: "red", marginRight: "4px" }}>x</span>
                     <span>{formatDisplay(rv.name)}</span>
@@ -2297,6 +2246,257 @@ const updateVideoConfigEditable = (newEditable: boolean) => {
         </div>
       )}
       
+      {/* Conteneur pour la vidéo de performance playback */}
+      {showPerformancePlayback && performanceVideoURL && calibrationConfig && absoluteCrop && absolutePoints && absoluteVideoOffset ? (
+        <Rnd position={recordedVideoContainerPos} onDragStop={(e, d) => setRecordedVideoContainerPos({ x: d.x, y: d.y })}>
+          <div
+            id="recordedVideoContainer"
+            style={{
+              width: absoluteCrop.width,
+              height: absoluteCrop.height,
+              position: "relative",
+              overflow: "visible",
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                left: absoluteCrop.x,
+                top: absoluteCrop.y,
+                width: absoluteCrop.width,
+                height: absoluteCrop.height,
+                overflow: "visible",
+              }}
+            >
+              <PerspectiveTransform
+                points={recordedVideoPerspectivePoints || { topLeft: { x: 0, y: 0 }, topRight: { x: 640, y: 0 }, bottomRight: { x: 640, y: 360 }, bottomLeft: { x: 0, y: 360 } }}
+                editable={false}
+              >
+                {/* IMPORTANT: Utiliser deux éléments vidéo différents selon le mode (looper ou lecture unique) */}
+                {isLocalVideo ? (
+                  isLoopPlaying ? (
+                    // Vidéo du looper — avec boucle
+                    <video
+                      ref={el => {
+                        loopVideoRef.current = el
+                        performanceVideoRef.current = el
+                      }}
+                      src={performanceVideoURL!}
+                      playsInline
+                      style={{
+                        position: "absolute",
+                        left: -absoluteVideoOffset.x,
+                        top: -absoluteVideoOffset.y,
+                        width: "640px",
+                        height: "auto",
+                      }}
+                      onLoadedData={() => {
+                        const el = loopVideoRef.current;
+                        if (el) sendVideoToSecondScreen(el, {
+                          crop: absoluteCrop!, perspectivePoints: absolutePoints!, videoOffset: absoluteVideoOffset!, baseWidth: 640, baseHeight: (absoluteCrop!.height/absoluteCrop!.width)*640
+                        });
+                        // Démarre vidéo + MIDI en une fois, sans délai
+                        loopVideoRef.current?.play().catch(console.error)
+                        startLoopMidiPlayback()
+                      }}
+                      onEnded={() => {
+                        clearSecondScreen();
+                        // Quand la vidéo s’arrête, couper le piano
+                        if (!isLoopPlaying) {
+                          midiOutputRef.current?.send([0xB0,123,0])
+                          midiOutputRef.current?.send([0xB0,121,0])
+                          return
+                        }
+                        // Si on est toujours en mode loop, relance vidéo+MIDI en synchro
+                        loopVideoRef.current!.currentTime = 0
+                        loopVideoRef.current!.play().catch(console.error)
+                        startLoopMidiPlayback()
+                      }}
+                    />
+                  ) : (
+                    // Vidéo pour la lecture unique (bouton ⟲)
+                    <video
+                      ref={performanceVideoRef}
+                      src={performanceVideoURL!}
+                      playsInline
+                      style={{
+                        position: "absolute",
+                        left: -absoluteVideoOffset.x,
+                        top: -absoluteVideoOffset.y,
+                        width: "640px",
+                        height: "auto",
+                      }}
+                      onLoadedData={() => {
+                        if (performanceVideoRef.current) sendVideoToSecondScreen(performanceVideoRef.current, {
+                          crop: absoluteCrop!, perspectivePoints: absolutePoints!, videoOffset: absoluteVideoOffset!, baseWidth: 640, baseHeight: (absoluteCrop!.height/absoluteCrop!.width)*640
+                        });
+                        setTimeout(() => {
+                          performanceVideoRef.current?.play().catch(err =>
+                            console.error("Erreur lors de la lecture de la vidéo locale:", err)
+                          );
+                        }, videoDelayMs);
+                      }}
+                      onEnded={() => {
+                        clearSecondScreen();
+                        if (!isLoopPlaying) {
+                          setShowPerformancePlayback(false);
+                        }
+                      }}
+                    />
+                  )
+                ) : (
+                  // Pour les vidéos non-locales (URLs distantes)
+                  <ContentMedia
+                    ref={performanceVideoRef}
+                    path={performanceVideoURL}
+                    type="video"
+                    onLoadedData={() => {
+                      if (performanceVideoRef.current) sendVideoToSecondScreen(performanceVideoRef.current, {
+                        crop: absoluteCrop!, perspectivePoints: absolutePoints!, videoOffset: absoluteVideoOffset!, baseWidth: 640, baseHeight: (absoluteCrop!.height/absoluteCrop!.width)*640
+                      });
+                      setTimeout(() => {
+                        performanceVideoRef.current?.play();
+                      }, videoDelayMs);
+                    }}
+                    onEnded={() => {
+                      clearSecondScreen();
+                      setShowPerformancePlayback(false);
+                    }}
+                    style={{
+                      position: "absolute",
+                      left: -absoluteVideoOffset.x,
+                      top: -absoluteVideoOffset.y,
+                      width: "640px",
+                      height: "auto",
+                    }}
+                  />
+                )}
+              </PerspectiveTransform>
+            </div>
+          </div>
+        </Rnd>
+      ) : null}
+      {/* Conteneur pour la vidéo par défaut (vidéo enregistrée depuis la liste déroulante) */}
+      {!videoLoading && (
+        <div
+          id="defaultVideoContainer"
+          style={{
+            margin: "0 auto",
+            width: "100%",
+            maxWidth: "1200px",
+            overflow: "visible",
+            display: "block", // Toujours présent dans le DOM
+            visibility: mainVideoReady ? "visible" : "hidden",
+            position: "relative", 
+            zIndex: 1, // Z-index inférieur pour rester sous les autres vidéos
+            opacity: selectedRecordedName || showPerformancePlayback ? 0 : 1, // Transparent quand d’autres vidéos sont actives
+            transition: "opacity 0.3s ease" // Transition douce
+          }}
+        >
+          <PerspectiveTransform
+            storageKey={`calibration-${soundId}`}
+            editable={editable}
+            toggleKeys={["v"]}
+            enableGroupDrag
+            onPointsChange={(newPoints: Points) => {
+              handleCalibrationPointsChange(newPoints);
+            }}
+          >
+            <ContentMedia
+              ref={videoRef}
+              path={selectedSound?.videoUrl || ""}
+              type="video"
+              onLoadedData={() => {
+                if (videoRef.current) sendVideoToSecondScreen(videoRef.current, {
+                  crop: absoluteCrop!, perspectivePoints: absolutePoints!, videoOffset: absoluteVideoOffset!, baseWidth: 640, baseHeight: (absoluteCrop!.height/absoluteCrop!.width)*640
+                });
+              }}
+              playsInline
+              onTimeUpdate={(e: React.SyntheticEvent<HTMLVideoElement>) => setCurrentTime(e.currentTarget.currentTime)}
+              style={{ width: "100%", height: "auto" }}
+            />
+          </PerspectiveTransform>
+        </div>
+      )}
+      {/* Conteneur pour les vidéos enregistrées du profil (sélectionnées dans la liste déroulante) */}
+      {selectedRecordedName && (
+        <Rnd position={recordedVideoContainerPos} onDragStop={(e, d) => setRecordedVideoContainerPos({ x: d.x, y: d.y })}>
+          <div
+            id="recordedVideoContainer"
+            style={{
+              width: absoluteCrop ? absoluteCrop.width : 640,
+              height: absoluteCrop ? absoluteCrop.height : 360,
+              position: "relative",
+              overflow: "visible",
+              zIndex: 2, // Higher z-index to appear on top of the default video
+              visibility: showPerformancePlayback ? "hidden" : "visible" // Hide when performance video is active, but keep in DOM
+            }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                left: absoluteCrop ? absoluteCrop.x : 0,
+                top: absoluteCrop ? absoluteCrop.y : 0,
+                width: absoluteCrop ? absoluteCrop.width : 640,
+                height: absoluteCrop ? absoluteCrop.height : 360,
+                overflow: "visible",
+              }}
+            >
+              <PerspectiveTransform
+                // Utilise les points sauvegardés si existants ou un défaut
+                points={recordedVideoPerspectivePoints || { topLeft: { x: 0, y: 0 }, topRight: { x: 640, y: 0 }, bottomRight: { x: 640, y: 360 }, bottomLeft: { x: 0, y: 360 } }}
+                editable={editable}
+                toggleKeys={["v"]}
+                enableGroupDrag
+                // Met à jour les points lors d’un changement
+                onPointsChange={(newPoints: Points) => setRecordedVideoPerspectivePoints(newPoints)}
+              >
+                {/* ─── Vidéo enregistrée — boucle si "_LOOP" ──────────────────── */}
+                {(() => {
+                  const isLoop = selectedRecordedName.toLowerCase().endsWith("_loop.webm");
+                  return (
+                    <video
+                      ref={recordedVideoRef}
+                      src={selectedRecordedVideo?.blobUrl}
+                      controls
+                      style={{
+                        position: "absolute",
+                        left: absoluteVideoOffset ? -absoluteVideoOffset.x : 0,
+                        top: absoluteVideoOffset ? -absoluteVideoOffset.y : 0,
+                        width: "640px",
+                        height: "auto",
+                      }}
+                      onLoadedData={() => {
+                        if (recordedVideoRef.current) sendVideoToSecondScreen(recordedVideoRef.current, {
+                          crop: absoluteCrop!, perspectivePoints: absolutePoints!, videoOffset: absoluteVideoOffset!, baseWidth: 640, baseHeight: (absoluteCrop!.height/absoluteCrop!.width)*640
+                        });
+                        setTimeout(() => {
+                          recordedVideoRef.current?.play();
+                          if (isLoop) playRecordedMidi();
+                        }, videoDelayMs);
+                      }}
+                      onEnded={() => {
+                        clearSecondScreen();
+                        if (isLoop) {
+                          // remet au début et reboucle
+                          recordedVideoRef.current!.currentTime = 0;
+                          recordedVideoRef.current!.play();
+                          playRecordedMidi();
+                        } else {
+                          // comportement par défaut
+                          setSelectedRecordedName("");
+                        }
+                      }}
+                    />
+                  );
+                })()}
+                {/* ──────────────────────────────────────────────────────────────── */}
+
+              </PerspectiveTransform>
+            </div>
+          </div>
+        </Rnd>
+      )}
       <style jsx>{`
         @keyframes blinkRecord {
           0% { background-color: #dc3545; }
