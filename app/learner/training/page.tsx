@@ -113,6 +113,11 @@ export default function TrainingPage() {
   // États de contrôle
   const [editable, setEditable] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
+
+  useEffect(() => {
+    sendToSecond({ type: "SET_SPEED", speed: playbackSpeed });
+  }, [playbackSpeed]);
+
   const [currentTime, setCurrentTime] = useState(0);
   const [currentSectionIndex, setCurrentSectionIndex] = useState(0);
   const videoRef = useRef<HTMLVideoElement | null>(null);
