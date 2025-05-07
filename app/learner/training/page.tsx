@@ -12,15 +12,6 @@ import { getCalibrationConfig, CalibrationConfig, savePositionConfig, getPositio
 import { uploadVideo, uploadMidiData, addRecordingToLearner } from "../../services/mediaService";
 import ContentMedia from "../../../components/ContentMedia";
 import { getProxiedUrl } from '../../utils/proxyUrl';
-import { startTrainingSession, endTrainingSession, trackEvent, trackMetric, trackSectionMetric, trackSectionListeningTime, TrainingEventTypes } from "@/app/services/analyticsService";
-import {
-  sendVideoToSecondScreen,
-  clearSecondScreen,
-  closeSecondScreen,
-  setupPerspectiveChangeListener,
-  PerspectivePoints
-} from "../../services/secondScreenService";
-
 
 // Interface pour un événement MIDI
 interface MidiEvent {
@@ -59,14 +50,22 @@ interface ContainerPos {
 }
 
 export default function TrainingPage() {
+
+  const secondWindowRef = useRef<Window | null>(null);
+  // ─── Ouvre la page SecondScreen dans une nouvelle fenêtre ───
+  
+  // helper pour envoyer dans la fenêtre secondaire
+  function sendToSecond(msg: any) {
+    secondWindowRef.current?.postMessage(msg, "*");
+  }
+
+
+
   const searchParams = useSearchParams();
   const router = useRouter();
   const soundId = searchParams?.get("soundId") ?? null;
   // 👇 Hook placé à l’intérieur du composant
   const [videoDelayMs, setVideoDelayMs] = useState(250);
-  
-  // Référence pour limiter la fréquence des sauvegardes de calibration
-  const lastCalibrationSaveTime = useRef<number>(0);
   
   // Ajout des états manquants
   const [loading, setLoading] = useState(false);
@@ -78,29 +77,6 @@ export default function TrainingPage() {
   const { sounds, updateSound } = useSoundContext();
   const selectedSound = sounds.find((s) => s.id === soundId);
 
-  // Initialisation de la session d’analyse au chargement
-  useEffect(() => {
-    if (currentLearnerName && soundId && selectedSound) {
-      // On passe également le titre du son pour l'afficher dans les analyses
-      startTrainingSession(currentLearnerName, soundId, selectedSound.title || "");
-      // Enregistrer l'événement de démarrage de session
-      trackEvent(TrainingEventTypes.SESSION_START);
-
-      // Enregistrer le temps d'activité lors de la fermeture de la page
-      const handleBeforeUnload = () => {
-        trackEvent(TrainingEventTypes.PAGE_LEAVE);
-        endTrainingSession();
-      };
-
-      window.addEventListener('beforeunload', handleBeforeUnload);
-
-      return () => {
-        window.removeEventListener('beforeunload', handleBeforeUnload);
-        endTrainingSession();
-      };
-    }
-  }, [currentLearnerName, soundId, selectedSound]);
-
   useEffect(() => {
     if (!currentLearnerName) router.push("/learner/profile");
     if (!soundId) router.push("/learner/select-sound");
@@ -109,6 +85,24 @@ export default function TrainingPage() {
   useEffect(() => {
     if (!selectedSound) router.push("/learner/select-sound");
   }, [selectedSound, router]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    // On n’ouvre qu’une seule fois la fenêtre
+    if (!secondWindowRef.current) {
+      const url = `/learner/training/second-screen?soundId=${encodeURIComponent(soundId!)}`;
+      secondWindowRef.current = window.open(
+        url,
+        "_blank",
+        "width=1280,height=720,left=1920,top=0"
+      );
+      // Envoi immédiat de la vidéo par défaut dès l’ouverture
+      sendToSecond({ type: "SHOW_DEFAULT", url: selectedSound?.videoUrl });
+    } else {
+      // Si la fenêtre est déjà ouverte, on peut lui renvoyer une mise à jour
+      sendToSecond({ type: "SHOW_DEFAULT", url: selectedSound?.videoUrl });
+    }
+  }, [soundId, selectedSound?.videoUrl]);
 
   // États de contrôle
   const [editable, setEditable] = useState(false);
@@ -130,14 +124,6 @@ export default function TrainingPage() {
 
   // Nouvel état pour le dropdown
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  
-  // Nouvel état pour gérer la sauvegarde Firebase
-  const [saveToFirebase, setSaveToFirebase] = useState(false);
-  
-  // Fonction utilitaire pour vérifier si les sauvegardes Firebase sont autorisées
-  const shouldSaveToFirebase = () => {
-    return saveToFirebase || currentLearnerName !== "Polpii";
-  };
   
   // Fonction utilitaire de formatage
   const formatDisplay = (recordingName: string) => {
@@ -426,30 +412,24 @@ export default function TrainingPage() {
   const handlePlaySection = (section: Section) => {
     if (!selectedSound) return;
     
-    // Suivi analytique: section jouée
     const sectionIndex = selectedSound.sections.indexOf(section);
-    trackEvent(TrainingEventTypes.SECTION_PLAY, { 
-      sectionIndex, 
-      start: section.start, 
-      end: section.end
-    });
-    trackEvent(TrainingEventTypes.SECTION_LISTEN, { sectionIndex });
     
-    setCurrentSectionIndex(selectedSound.sections.indexOf(section));
+    setCurrentSectionIndex(sectionIndex);
     setOverlayMessage("Pay attention");
     if (videoRef.current) videoRef.current.currentTime = section.start;
     playSection(section);
     playMidiSection(section);
     const sectionDurationMs = ((section.end - section.start) * 1000) / playbackSpeed;
     
-    // Enregistrer le temps d'écoute pour cette section
-    trackSectionListeningTime(sectionIndex, sectionDurationMs);
-    
     scheduleTimeout(() => {
       setOverlayMessage("Your turn now");
-      trackEvent(TrainingEventTypes.SECTION_PERFORM, { sectionIndex });
       startPerformanceRecording(section);
     }, sectionDurationMs);
+    sendToSecond({
+      type: "PLAY_SECTION",
+      start: section.start,
+      end: section.end
+    });
   };
 
   const handlePlayButton = () => {
@@ -492,6 +472,7 @@ const handleListenPreviousButton = () => {
         
         // Afficher la vidéo
         setShowPerformancePlayback(true);
+        sendToSecond({ type: "SHOW_PERFORMANCE", url: storedVideoURL! });
         
         // Planifier la lecture des événements MIDI (une seule fois)
         if (performanceMIDIEventsRef.current.length > 0 && midiOutputRef.current) {
@@ -516,9 +497,6 @@ const handleListenPreviousButton = () => {
   const handleRecordButton = async () => {
     if (!isRecording) {
       try {
-        // Suivi analytique: début d’enregistrement
-        trackEvent(TrainingEventTypes.RECORDING_START);
-        
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
         const recorder = new MediaRecorder(stream);
         const chunks: BlobPart[] = [];
@@ -617,9 +595,6 @@ const handleListenPreviousButton = () => {
         midiInputRef.current.onmidimessage = globalMidiHandler;
       }
       console.log("Recording stopped.");
-      
-      // Suivi analytique: fin d’enregistrement
-      trackEvent(TrainingEventTypes.RECORDING_STOP);
     }
   };
 
@@ -716,35 +691,6 @@ const stopPerformanceRecording = () => {
       newEvaluations[selectedSound.id][currentSectionIndex] = colors;
       const updatedLearner = { ...currentLearner, evaluations: newEvaluations };
       updateLearner(updatedLearner);
-
-      // Suivi analytique: enregistrement du score
-      const redCount = colors.filter(c => c === 'red').length;
-      const orangeCount = colors.filter(c => c === 'orange').length;
-      const greenCount = colors.filter(c => c === 'green').length;
-      const totalNotes = colors.length;
-      
-      // Calculer un score sur 100
-      const score = totalNotes > 0 
-        ? Math.round((greenCount * 100 + orangeCount * 50) / totalNotes) 
-        : 0;
-        
-      // Enregistrer le score et les statistiques détaillées
-      trackEvent(TrainingEventTypes.SECTION_SCORE, { 
-        sectionIndex: currentSectionIndex, 
-        score,
-        stats: { 
-          total: totalNotes,
-          red: redCount, 
-          orange: orangeCount, 
-          green: greenCount 
-        }
-      });
-      
-      // Enregistrer aussi comme métrique de section
-      trackSectionMetric(currentSectionIndex, 'score', score);
-      trackSectionMetric(currentSectionIndex, 'red_notes', redCount);
-      trackSectionMetric(currentSectionIndex, 'orange_notes', orangeCount);
-      trackSectionMetric(currentSectionIndex, 'green_notes', greenCount);
     }
   }
   
@@ -1021,84 +967,66 @@ const stopPerformanceRecording = () => {
 
   // Transformation du bouton pause en bouton stop
   const handleStop = () => {
-    // 1) Réinitialise la vidéo principale et la renvoie (pause + t=0) sur l’écran secondaire
-    if (videoRef.current && calibrationConfig && absoluteCrop && absolutePoints && absoluteVideoOffset) {
-      // Met la vidéo par défaut en pause et la remet au début
-      videoRef.current.pause();
-      videoRef.current.currentTime = 0;
-      // Envoie ce même élément sur le second écran (clone + synchro)
-      sendVideoToSecondScreen(videoRef.current, {
-        crop: absoluteCrop,
-        perspectivePoints: absolutePoints,
-        videoOffset: absoluteVideoOffset,
-        baseWidth: 640,
-        baseHeight: (absoluteCrop.height / absoluteCrop.width) * 640
-      });
-    }
-  
-    // 2) Annule tous les timeouts pour s’assurer qu’il n’y a plus de play/pause/seek programmés
+    // Annuler tous les timeouts en attente
     scheduledTimeouts.current.forEach((timeout) => clearTimeout(timeout));
     scheduledTimeouts.current = [];
-  
-    // 3) Masque toute overlay ou playback de performance en cours
+    // Masquer immédiatement l’overlay
     setOverlayMessage(null);
-    setShowPerformancePlayback(false);
-    setSelectedRecordedName("");
-  
-    // 4) Met la vidéo enregistrée (dropdown) en pause
+    // Arrêter la vidéo principale et celle enregistrée
+    if (videoRef.current) {
+      videoRef.current.pause();
+    }
     if (recordedVideoRef.current) {
       recordedVideoRef.current.pause();
     }
-  
-    // 5) Stoppe toute lecture MIDI en cours sur le Disklavier
+    // Envoyer "all notes off" via MIDI pour stopper le piano
     if (midiOutputRef.current) {
-      // All Notes Off
+      midiOutputRef.current.send([0xB0, 64, 0]);
       midiOutputRef.current.send([0xB0, 123, 0]);
-      // Reset controllers
-      midiOutputRef.current.send([0xB0, 121, 0]);
     }
-  
-    // 6) Stoppe et ré-initialise les enregistrements (général, performance, loop)
+    // Arrêter l’enregistrement général s’il est en cours
     if (isRecording && mediaRecorder) {
       mediaRecorder.stop();
-      recordStream?.getTracks().forEach((t) => t.stop());
+      recordStream?.getTracks().forEach(track => track.stop());
       setIsRecording(false);
       setMediaRecorder(null);
       setRecordStream(null);
     }
+    // Arrêter le performance recording s’il est en cours
     if (isPerformanceRecording && performanceRecorderRef.current) {
       performanceRecorderRef.current.stop();
-      performanceStreamRef.current?.getTracks().forEach((t) => t.stop());
+      performanceStreamRef.current?.getTracks().forEach((track) => track.stop());
       setIsPerformanceRecording(false);
     }
+    // Masquer la vidéo enregistrée et réafficher la vidéo de base
+    setShowPerformancePlayback(false);
+    setSelectedRecordedName("");
+    // Arrêter également le looper s’il est en cours
     if (isLooping) {
-      // arrête la loop en cours
-      if (loopRecorderRef.current) loopRecorderRef.current.stop();
-      if (loopStreamRef.current) loopStreamRef.current.getTracks().forEach((t) => t.stop());
+      if (loopRecorderRef.current) {
+        loopRecorderRef.current.stop();
+      }
+      if (loopStreamRef.current) {
+        loopStreamRef.current.getTracks().forEach(track => track.stop());
+      }
       setIsLooping(false);
+      // Réinitialiser le ref pour la pédale
       isLoopingRef.current = false;
     }
-    // Stoppe aussi toute lecture de loop
+    
+    // Arrêter la lecture des loops
     stopLoopPlayback();
-  
-    // 7) Remet le handler MIDI global (pour les futures sessions)
     if (midiInputRef.current) {
       midiInputRef.current.onmidimessage = globalMidiHandler;
     }
+
+    sendToSecond({ type: "SHOW_DEFAULT", url: selectedSound?.videoUrl });
+
   };
 
   // Ajout de la fonction handleSavePerformance - inchangée (upload sur Firebase)
   const handleSavePerformance = async () => {
     if (!performanceVideoURL || !currentLearnerName) return;
-    
-    // Si l'option "Save to Firebase" est désactivée, ne pas uploader vers Firebase
-    if (!shouldSaveToFirebase()) {
-      console.log("Firebase save désactivé, aucune donnée n'a été sauvegardée");
-      // Fermer la vidéo de performance simplement
-      setPerformanceVideoURL(null);
-      setShowPerformancePlayback(false);
-      return;
-    }
     
     const dateObj = new Date();
     const day = String(dateObj.getDate()).padStart(2, "0");
@@ -1188,14 +1116,7 @@ const stopPerformanceRecording = () => {
 
   // Update the onPointsChange handler to use the new handleCalibrationPointsChange function
   const handleCalibrationPointsChange = (newPoints: Points) => {
-    if (!shouldSaveToFirebase()) {
-      console.log("Points de calibration non sauvegardés (Firebase désactivé)");
-      return; // Ne pas sauvegarder si Firebase est désactivé
-    }
-    
-    // Limiter le nombre de sauvegardes avec un debounce
-    if (selectedSound && Date.now() - lastCalibrationSaveTime.current > 2000) {
-      lastCalibrationSaveTime.current = Date.now();
+    if (selectedSound) {
       const updatedSound = { 
         ...selectedSound, 
         calibration: { 
@@ -1243,7 +1164,6 @@ const stopPerformanceRecording = () => {
     // Nettoyer l’élément au démontage
     return () => {
       document.body.removeChild(preloadVideo);
-      closeSecondScreen();
     };
   }, [selectedSound?.videoUrl]);
 
@@ -1416,7 +1336,7 @@ const startLoopPlayback = async (layers: any[]) => {
       // Trier par timestamp pour s’assurer qu’ils sont joués dans l’ordre
       allMidiEvents.sort((a, b) => a.timestamp - b.timestamp);
       
-      console.log(`Total d'événements MIDI à jouer: ${allMidiEvents.length}`);
+      console.log(`Total d’événements MIDI à jouer: ${allMidiEvents.length}`);
       
       // Calculer la durée totale de la plus longue séquence
       const maxDuration = allMidiEvents.length > 0 
@@ -1894,58 +1814,6 @@ const playRecordedMidi = () => {
 // ------------------------------------------------------------------
 
 
-  // État pour stocker les points de perspective pour le second écran
-  const [secondScreenPerspectivePoints, setSecondScreenPerspectivePoints] = useState<Points | null>(null);
-  
-  // Référence pour le conteneur du second écran
-  const secondScreenContainerRef = useRef<HTMLDivElement | null>(null);
-
-  // Configurer l'écouteur pour les changements de perspective depuis la fenêtre secondaire
-  useEffect(() => {
-    // Configurer l'écouteur d'événements pour les changements de points
-    const cleanup = setupPerspectiveChangeListener((points) => {
-      console.log("Points updated from second screen:", points);
-      
-      // Mettre à jour les points locaux
-      setRecordedVideoPerspectivePoints(points as Points);
-      
-      // Sauvegarder dans Firebase si autorisé
-      if (shouldSaveToFirebase() && currentLearnerName && soundId) {
-        savePositionConfig(
-          currentLearnerName,
-          soundId,
-          {
-            position: recordedVideoContainerPos,
-            perspectivePoints: points as Points
-          }
-        ).then(() => console.log("Position config saved to Firebase"))
-          .catch(err => console.error("Failed to save position config:", err));
-      }
-    });
-    
-    // Nettoyer l'écouteur à la destruction du composant
-    return cleanup;
-  }, [currentLearnerName, soundId, recordedVideoContainerPos]);
-
-  // Fonction pour envoyer une vidéo au second écran avec la transformation de perspective
-  const sendVideoWithPerspective = (videoElement: HTMLVideoElement | null) => {
-    if (!videoElement || !absoluteCrop || !absoluteVideoOffset) return;
-    
-    sendVideoToSecondScreen(videoElement, {
-      crop: absoluteCrop,
-      perspectivePoints: recordedVideoPerspectivePoints || {
-        topLeft: { x: 0, y: 0 },
-        topRight: { x: absoluteCrop.width, y: 0 },
-        bottomRight: { x: absoluteCrop.width, y: absoluteCrop.height },
-        bottomLeft: { x: 0, y: absoluteCrop.height }
-      },
-      videoOffset: absoluteVideoOffset,
-      baseWidth: 640,
-      baseHeight: (absoluteCrop.height / absoluteCrop.width) * 640,
-      editable // Passer l'état editable pour afficher les points sur le second écran
-    });
-  };
-
   if (loading) {
     return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}>
       Chargement...
@@ -2047,18 +1915,16 @@ const playRecordedMidi = () => {
                       height: "auto",
                     }}
                     onLoadedData={() => {
-                      if (performanceVideoRef.current) sendVideoWithPerspective(performanceVideoRef.current);
                       // S’assurer que le délai VIDEO_DELAY_MS est respecté
                       setTimeout(() => {
-                        if (performanceVideoRef.current) performanceVideoRef.current.play().catch(err => 
-                          console.error("Erreur lors de la lecture de la vidéo locale:", err)
-                        );
+                        if (performanceVideoRef.current) {
+                          performanceVideoRef.current.play().catch(err => 
+                            console.error("Erreur lors de la lecture de la vidéo locale:", err)
+                          );
+                        }
                       }, videoDelayMs); // Utiliser la constante VIDEO_DELAY_MS
                     }}
-                    onEnded={() => {
-                      clearSecondScreen();
-                      setShowPerformancePlayback(false);
-                    }}
+                    onEnded={() => setShowPerformancePlayback(false)}
                   />
                 ) : null}
               </PerspectiveTransform>
@@ -2068,18 +1934,12 @@ const playRecordedMidi = () => {
       )}
       {/* Barre supérieure */}
       <div style={{ position: "relative", marginBottom: "1rem" }}>
-        <div style={{ position: "absolute", left: 0, top: 0, display: "flex", alignItems: "center", gap: "1rem" }}>
+        <div style={{ position: "absolute", left: 0, top: 0 }}>
           <Link href="/learner/select-sound">
             <button style={{ backgroundColor: "#0070f3", color: "#fff", padding: "0.5rem 1rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "0.8rem" }}>
               Back
             </button>
           </Link>
-          {currentLearnerName === "Polpii" && (
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-              <IOSSwitch checked={saveToFirebase} onChange={() => setSaveToFirebase(!saveToFirebase)} />
-              <span style={{ fontSize: "0.8rem" }}>Save to Firebase</span>
-            </div>
-          )}
         </div>
         <h4 style={{ textAlign: "center", fontSize: "1.5rem", margin: 0, marginBottom: "4rem" }}>{selectedSound?.title}</h4>
       </div>
@@ -2116,7 +1976,10 @@ const playRecordedMidi = () => {
             Save Position
           </button>
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <IOSSwitch checked={editable} onChange={() => setEditable(!editable)} />
+            <IOSSwitch checked={editable} 
+            onChange={() => {
+              setEditable(!editable); 
+              sendToSecond({ type: "TOGGLE_EDIT", editable: !editable });}}/>
             <span style={{ fontSize: "0.5rem" }}>Edit Transform</span>
           </div>
         </>
@@ -2151,8 +2014,6 @@ const playRecordedMidi = () => {
           <input type="range" min="0.10" max="2" step="0.1" value={playbackSpeed} onChange={(e) => {
             const newSpeed = parseFloat(e.target.value);
             setPlaybackSpeed(newSpeed);
-            // Suivi analytique du changement de vitesse
-            trackEvent(TrainingEventTypes.PLAYBACK_SPEED_CHANGE, { oldSpeed: playbackSpeed, newSpeed });
           }} list="tickmarks" style={{ cursor: "pointer" }} />
           <datalist id="tickmarks">
             <option value="1" label="1"></option>
@@ -2189,7 +2050,7 @@ const playRecordedMidi = () => {
                       borderBottom: "1px solid #eee",
                       whiteSpace: "nowrap"
                     }}
-                    onClick={() => { setSelectedRecordedName(rv.name); setDropdownOpen(false); }}
+                    onClick={() => { setSelectedRecordedName(rv.name); setDropdownOpen(false); sendToSecond({ type: "SHOW_RECORDED", url: rv.blobUrl }); }}
                   >
                     <span onClick={(e) => { e.stopPropagation(); handleDeleteRecording(rv.name); }} style={{ cursor: "pointer", color: "red", marginRight: "4px" }}>x</span>
                     <span>{formatDisplay(rv.name)}</span>
@@ -2348,18 +2209,15 @@ const playRecordedMidi = () => {
                         height: "auto",
                       }}
                       onLoadedData={() => {
-                        const el = loopVideoRef.current;
-                        if (el) sendVideoWithPerspective(el);
                         // Démarre vidéo + MIDI en une fois, sans délai
                         loopVideoRef.current?.play().catch(console.error)
                         startLoopMidiPlayback()
                       }}
                       onEnded={() => {
-                        clearSecondScreen();
                         // Quand la vidéo s’arrête, couper le piano
                         if (!isLoopPlaying) {
-                          midiOutputRef.current?.send([0xB0,123,0])
-                          midiOutputRef.current?.send([0xB0,121,0])
+                          midiOutputRef.current?.send([0xB0, 123, 0])
+                          midiOutputRef.current?.send([0xB0, 121, 0])
                           return
                         }
                         // Si on est toujours en mode loop, relance vidéo+MIDI en synchro
@@ -2382,7 +2240,6 @@ const playRecordedMidi = () => {
                         height: "auto",
                       }}
                       onLoadedData={() => {
-                        if (performanceVideoRef.current) sendVideoWithPerspective(performanceVideoRef.current);
                         setTimeout(() => {
                           performanceVideoRef.current?.play().catch(err =>
                             console.error("Erreur lors de la lecture de la vidéo locale:", err)
@@ -2390,7 +2247,6 @@ const playRecordedMidi = () => {
                         }, videoDelayMs);
                       }}
                       onEnded={() => {
-                        clearSecondScreen();
                         if (!isLoopPlaying) {
                           setShowPerformancePlayback(false);
                         }
@@ -2404,15 +2260,11 @@ const playRecordedMidi = () => {
                     path={performanceVideoURL}
                     type="video"
                     onLoadedData={() => {
-                      if (performanceVideoRef.current) sendVideoWithPerspective(performanceVideoRef.current);
                       setTimeout(() => {
                         performanceVideoRef.current?.play();
                       }, videoDelayMs);
                     }}
-                    onEnded={() => {
-                      clearSecondScreen();
-                      setShowPerformancePlayback(false);
-                    }}
+                    onEnded={() => setShowPerformancePlayback(false)}
                     style={{
                       position: "absolute",
                       left: -absoluteVideoOffset.x,
@@ -2457,9 +2309,6 @@ const playRecordedMidi = () => {
               ref={videoRef}
               path={selectedSound?.videoUrl || ""}
               type="video"
-              onLoadedData={() => {
-                if (videoRef.current) sendVideoWithPerspective(videoRef.current);
-              }}
               playsInline
               onTimeUpdate={(e: React.SyntheticEvent<HTMLVideoElement>) => setCurrentTime(e.currentTarget.currentTime)}
               style={{ width: "100%", height: "auto" }}
@@ -2516,14 +2365,12 @@ const playRecordedMidi = () => {
                         height: "auto",
                       }}
                       onLoadedData={() => {
-                        if (recordedVideoRef.current) sendVideoWithPerspective(recordedVideoRef.current);
                         setTimeout(() => {
                           recordedVideoRef.current?.play();
                           if (isLoop) playRecordedMidi();
                         }, videoDelayMs);
                       }}
                       onEnded={() => {
-                        clearSecondScreen();
                         if (isLoop) {
                           // remet au début et reboucle
                           recordedVideoRef.current!.currentTime = 0;
