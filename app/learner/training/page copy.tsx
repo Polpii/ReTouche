@@ -13,8 +13,12 @@ import { uploadVideo, uploadMidiData, addRecordingToLearner } from "../../servic
 import ContentMedia from "../../../components/ContentMedia";
 import { getProxiedUrl } from '../../utils/proxyUrl';
 
-// Délai (en ms) pour synchroniser la vidéo avec le MIDI
-const VIDEO_DELAY_MS = 350;
+// Interface pour un événement MIDI
+interface MidiEvent {
+  data: number[];
+  timestamp: number;
+}
+
 
 /** Petit composant Switch façon iOS */
 function IOSSwitch({ checked, onChange }: { checked: boolean; onChange: () => void; }) {
@@ -46,35 +50,73 @@ interface ContainerPos {
 }
 
 export default function TrainingPage() {
+
+  const secondWindowRef = useRef<Window | null>(null);
+  // ─── Ouvre la page SecondScreen dans une nouvelle fenêtre ───
+  
+  // helper pour envoyer dans la fenêtre secondaire
+  function sendToSecond(msg: any) {
+    secondWindowRef.current?.postMessage(msg, "*");
+  }
+
+
+
   const searchParams = useSearchParams();
   const router = useRouter();
   const soundId = searchParams?.get("soundId") ?? null;
+  // 👇 Hook placé à l’intérieur du composant
+  const [videoDelayMs, setVideoDelayMs] = useState(250);
+  
+  // Ajout des états manquants
+  const [loading, setLoading] = useState(false);
+  const [videoLoading, setVideoLoading] = useState(true);
+  const [mainVideoReady, setMainVideoReady] = useState(false);
+  const videoElRef = useRef<HTMLVideoElement | null>(null);
 
   const { currentLearnerName, learners, updateLearner } = useLearnerContext();
   const { sounds, updateSound } = useSoundContext();
-
-  // Loading state
-  const [loading, setLoading] = useState(true);
-  const [mainVideoReady, setMainVideoReady] = useState(false);
-  const [videoLoading, setVideoLoading] = useState(true);
-  const videoElRef = useRef<HTMLVideoElement | null>(null);
+  const selectedSound = sounds.find((s) => s.id === soundId);
 
   useEffect(() => {
     if (!currentLearnerName) router.push("/learner/profile");
     if (!soundId) router.push("/learner/select-sound");
   }, [currentLearnerName, soundId, router]);
 
-  const selectedSound = sounds.find((s) => s.id === soundId);
   useEffect(() => {
     if (!selectedSound) router.push("/learner/select-sound");
   }, [selectedSound, router]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    // On n’ouvre qu’une seule fois la fenêtre
+    if (!secondWindowRef.current) {
+      const url = `/learner/training/second-screen?soundId=${encodeURIComponent(soundId!)}`;
+      secondWindowRef.current = window.open(
+        url,
+        "_blank",
+        "width=1280,height=720,left=1920,top=0"
+      );
+      // Envoi immédiat de la vidéo par défaut dès l’ouverture
+      sendToSecond({ type: "SHOW_DEFAULT", url: selectedSound?.videoUrl });
+    } else {
+      // Si la fenêtre est déjà ouverte, on peut lui renvoyer une mise à jour
+      sendToSecond({ type: "SHOW_DEFAULT", url: selectedSound?.videoUrl });
+    }
+  }, [soundId, selectedSound?.videoUrl]);
+
   // États de contrôle
   const [editable, setEditable] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
+
+  useEffect(() => {
+    sendToSecond({ type: "SET_SPEED", speed: playbackSpeed });
+  }, [playbackSpeed]);
+
   const [currentTime, setCurrentTime] = useState(0);
   const [currentSectionIndex, setCurrentSectionIndex] = useState(0);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const performanceVideoRef = useRef<HTMLVideoElement | null>(null);
+  const loopVideoRef = useRef<HTMLVideoElement | null>(null); // Une référence distincte pour le looper
 
   // Vidéos enregistrées du profil (enregistrées via le bouton blanc)
   const [recordedVideos, setRecordedVideos] = useState<RecordedVideo[]>([]);
@@ -99,13 +141,13 @@ export default function TrainingPage() {
     return `${date} | ${time} | ${songName}`;
   };
 
-  // États pour l'overlay et le performance recording (temporaire)
+  // États pour l’overlay et le performance recording (temporaire)
   const [overlayMessage, setOverlayMessage] = useState<string | null>(null);
   const [isPerformanceRecording, setIsPerformanceRecording] = useState(false);
   const [performanceVideoURL, setPerformanceVideoURL] = useState<string | null>(null);
   const [showPerformancePlayback, setShowPerformancePlayback] = useState(false);
   // Références pour les événements MIDI de performance
-  const performanceMIDIEventsRef = useRef<any[]>([]);
+  const performanceMIDIEventsRef = useRef<MidiEvent[]>([]);
   const lastPerformanceEventRef = useRef<number>(0);
   const performanceStreamRef = useRef<MediaStream | null>(null);
   const performanceStopTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -114,7 +156,44 @@ export default function TrainingPage() {
 
   // Références pour la lecture des vidéos enregistrées (dropdown et performance playback)
   const recordedVideoRef = useRef<HTMLVideoElement | null>(null);
-  const performanceVideoRef = useRef<HTMLVideoElement | null>(null);
+  
+  // Ajout d’un état pour suivre l’état de la pédale gauche (soft pedal)
+  const [leftPedalPressed, setLeftPedalPressed] = useState(false);
+  
+  // Looper states - déplacé ici pour éviter l’erreur "used before declaration"
+  const [isLooping, setIsLooping] = useState(false);
+  const [isLoopPlaying, setIsLoopPlaying] = useState(false);
+  const [loopLayers, setLoopLayers] = useState<{
+    videoUrl: string;
+    midiEvents: MidiEvent[];
+    startTime: number;
+  }[]>([]);
+  const loopRecorderRef = useRef<MediaRecorder | null>(null);
+  const loopStreamRef = useRef<MediaStream | null>(null);
+  const loopMidiEventsRef = useRef<MidiEvent[]>([]);
+  const loopStartTimeRef = useRef<number>(0);
+  const loopIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const isLoopingRef = useRef(false); // Ref pour suivre l’état du looper
+
+  // Pré-initialisation du flux média pour le looper
+  useEffect(() => {
+    // Demande d’accès à la caméra et au microphone dès le chargement de la page
+    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+      .then(stream => {
+        console.log("Flux média pour le looper initialisé avec succès");
+        loopStreamRef.current = stream;
+      })
+      .catch(err => {
+        console.error("Erreur lors de l’initialisation du flux média pour le looper:", err);
+      });
+      
+    // Nettoyage des tracks au démontage du composant
+    return () => {
+      if (loopStreamRef.current) {
+        loopStreamRef.current.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, []);
 
   // Chargement des vidéos sauvegardées depuis le profil
   useEffect(() => {
@@ -132,8 +211,8 @@ export default function TrainingPage() {
   // Pour afficher la vidéo enregistrée du profil
   const selectedRecordedVideo = recordedVideos.find((v) => v.name === selectedRecordedName);
 
-  // Références pour l'enregistrement MIDI général (lancé par le bouton blanc)
-  const midiEventsRef = useRef<any[]>([]);
+  // Références pour l’enregistrement MIDI général (lancé par le bouton blanc)
+  const midiEventsRef = useRef<MidiEvent[]>([]);
   const midiInputRef = useRef<MIDIInput | null>(null);
   const recordStartTimeRef = useRef<number>(0);
 
@@ -157,7 +236,7 @@ export default function TrainingPage() {
     }
   }, []);
 
-  // Initialisation globale du port MIDI d'entrée
+  // Initialisation globale du port MIDI d’entrée
   useEffect(() => {
     if (navigator.requestMIDIAccess) {
       navigator.requestMIDIAccess().then((midiAccess) => {
@@ -169,14 +248,12 @@ export default function TrainingPage() {
         );
         if (!input && inputs.length > 0) {
           input = inputs[0];
-          console.warn("Port MIDI d'entrée non trouvé pour Disklavier, utilisation du port :", input.name);
+          console.warn("Port MIDI d’entrée non trouvé pour Disklavier, utilisation du port :", input.name);
         }
         if (input) {
           midiInputRef.current = input as unknown as MIDIInput;
-          // Handler par défaut (inactif)
-          input.onmidimessage = (event) => {
-            // Pas d'action par défaut
-          };
+          // Utiliser le type d’événement correct avec une fonction d’adaptation
+          input.onmidimessage = globalMidiHandler;
         }
       });
     }
@@ -191,7 +268,7 @@ export default function TrainingPage() {
     ? selectedSound.sections.reduce((max: number, s: any) => Math.max(max, s.end), 0)
     : 60;
 
-  // Ajout d'un ref pour suivre les timeouts programmés
+  // Ajout d’un ref pour suivre les timeouts programmés
   const scheduledTimeouts = useRef<NodeJS.Timeout[]>([]);
   const scheduleTimeout = (cb: () => void, delay: number) => {
     const id = setTimeout(cb, delay);
@@ -206,7 +283,7 @@ export default function TrainingPage() {
     videoRef.current.playbackRate = playbackSpeed;
     scheduleTimeout(() => {
       videoRef.current?.play().catch((err) => console.error(err));
-    }, VIDEO_DELAY_MS);
+    }, videoDelayMs);
     const remaining = (section.end - videoRef.current.currentTime) / playbackSpeed;
     scheduleTimeout(() => {
       videoRef.current?.pause();
@@ -330,20 +407,29 @@ export default function TrainingPage() {
     });
   };
 
-  // Lorsqu'une vignette est cliquée, on lance la lecture de la section.
-  // À la fin, l'overlay passe à "Your turn now" et le performance recording démarre.
+  // Lorsqu’une vignette est cliquée, on lance la lecture de la section.
+  // À la fin, l’overlay passe à "Your turn now" et le performance recording démarre.
   const handlePlaySection = (section: Section) => {
     if (!selectedSound) return;
-    setCurrentSectionIndex(selectedSound.sections.indexOf(section));
+    
+    const sectionIndex = selectedSound.sections.indexOf(section);
+    
+    setCurrentSectionIndex(sectionIndex);
     setOverlayMessage("Pay attention");
     if (videoRef.current) videoRef.current.currentTime = section.start;
     playSection(section);
     playMidiSection(section);
     const sectionDurationMs = ((section.end - section.start) * 1000) / playbackSpeed;
+    
     scheduleTimeout(() => {
       setOverlayMessage("Your turn now");
       startPerformanceRecording(section);
     }, sectionDurationMs);
+    sendToSecond({
+      type: "PLAY_SECTION",
+      start: section.start,
+      end: section.end
+    });
   };
 
   const handlePlayButton = () => {
@@ -358,33 +444,37 @@ export default function TrainingPage() {
 
   // Solution pour le problème Firebase lors de la lecture de la vidéo locale
 
-// 1. D'abord, ajoutons un nouvel état pour indiquer si nous utilisons une vidéo locale ou distante
+// 1. D’abord, ajoutons un nouvel état pour indiquer si nous utilisons une vidéo locale ou distante
 const [isLocalVideo, setIsLocalVideo] = useState(false);
 
-// 2. Modifions handleListenPreviousButton pour définir cet état
+// 2. Modifions handleListenPreviousButton pour définir cet état et pour s’assurer que la vidéo ne joue qu’une seule fois
 const handleListenPreviousButton = () => {
   try {
     // Obtenir les données MIDI
     const storedMIDI = localStorage.getItem("localPerformanceMIDI");
-    // Obtenir l'URL de la vidéo
+    // Obtenir l’URL de la vidéo
     const storedVideoURL = localStorage.getItem("localPerformanceVideoURL");
     
     if (storedMIDI && storedVideoURL) {
       const recordingData = JSON.parse(storedMIDI);
       
-      // Configurer les événements MIDI
+      // Configurer les événements MIDI pour lecture unique
       performanceMIDIEventsRef.current = recordingData.midi || [];
       
-      // IMPORTANT: Vérifier si l'URL est un blob: ou un data:
-      if (storedVideoURL.startsWith('blob:') || storedVideoURL.startsWith('data:')) {
-        // Si c'est une URL locale, utiliser directement l'URL sans passer par ContentMedia
+      // IMPORTANT: Vérifier si l’URL est un blob: ou un data:
+      if (storedVideoURL.startsWith('blob:') || 'data:') {
+        // Si c’est une URL locale, utiliser directement l’URL sans passer par ContentMedia
         setPerformanceVideoURL(storedVideoURL);
+        
+        // IMPORTANT: indiquer qu’il s’agit d’une vidéo locale mais *PAS* en mode looper
         setIsLocalVideo(true);
+        setIsLoopPlaying(false); // S’assurer que le mode boucle est désactivé
         
         // Afficher la vidéo
         setShowPerformancePlayback(true);
+        sendToSecond({ type: "SHOW_PERFORMANCE", url: storedVideoURL! });
         
-        // Planifier la lecture des événements MIDI
+        // Planifier la lecture des événements MIDI (une seule fois)
         if (performanceMIDIEventsRef.current.length > 0 && midiOutputRef.current) {
           performanceMIDIEventsRef.current.forEach((event) => {
             scheduleTimeout(() => {
@@ -393,16 +483,13 @@ const handleListenPreviousButton = () => {
           });
         }
       } else {
-        console.error("L'URL n'est pas une URL locale valide");
-        alert("Format de vidéo non pris en charge");
+        console.error("L’URL n’est pas une URL locale valide");
       }
     } else {
       console.log("Aucune performance trouvée dans le stockage local");
-      alert("Aucune performance sauvegardée");
     }
   } catch (error) {
     console.error("Erreur lors du chargement depuis le stockage local:", error);
-    alert("Erreur lors du chargement de la performance");
   }
 };
 
@@ -444,7 +531,7 @@ const handleListenPreviousButton = () => {
                 midiUrl = await uploadMidiData(fileName.replace(".webm", ".json"), midiEventsRef.current);
               }
               
-              // Add recording to learner's profile
+              // Add recording to learner’s profile
               const recordingData = { name: fileName, videoUrl, midiUrl };
               if (currentLearnerName) {
                 await addRecordingToLearner(currentLearnerName, recordingData);
@@ -487,17 +574,11 @@ const handleListenPreviousButton = () => {
             );
             if (!input && inputs.length > 0) {
               input = inputs[0];
-              console.warn("Port MIDI d'entrée non trouvé pour Disklavier, utilisation du port :", input.name);
+              console.warn("Port MIDI d’entrée non trouvé pour Disklavier, utilisation du port :", input.name);
             }
             if (input) {
               midiInputRef.current = input as unknown as MIDIInput;
-              input.onmidimessage = (event) => {
-                const timestamp = performance.now() - recordStartTimeRef.current;
-                midiEventsRef.current.push({
-                  data: event.data ? Array.from(event.data) : [],
-                  timestamp,
-                });
-              };
+              input.onmidimessage = globalMidiHandler;
             }
           });
         }
@@ -511,7 +592,7 @@ const handleListenPreviousButton = () => {
       setMediaRecorder(null);
       setRecordStream(null);
       if (midiInputRef.current) {
-        midiInputRef.current.onmidimessage = null;
+        midiInputRef.current.onmidimessage = globalMidiHandler;
       }
       console.log("Recording stopped.");
     }
@@ -519,7 +600,7 @@ const handleListenPreviousButton = () => {
 
   // Enregistrement de performance (déclenché automatiquement après la section)
   // Le recording se lance quand "Your turn now" est affiché et se termine lorsque
-  // le temps minimum de la section est écoulé ET qu'aucune touche (note on) n'est pressée pendant 2 secondes.
+  // le temps minimum de la section est écoulé ET qu’aucune touche (note on) n’est pressée pendant 2 secondes.
   const startPerformanceRecording = (section: Section) => {
     navigator.mediaDevices.getUserMedia({ video: true, audio: true })
       .then((stream) => {
@@ -575,7 +656,7 @@ const handleListenPreviousButton = () => {
         const sectionDurationMs = ((section.end - section.start) * 1000) / playbackSpeed;
         const checkInactivity = () => {
           const now = performance.now();
-          // Arrêter le recording si le temps minimum de la section est écoulé ET aucune touche (note on) n'a été pressée pendant 2 sec.
+          // Arrêter le recording si le temps minimum de la section est écoulé ET aucune touche (note on) n’a été pressée pendant 2 sec.
           if (now - performanceRecordStartRef.current >= sectionDurationMs && now - lastPerformanceEventRef.current >= 2000) {
             stopPerformanceRecording();
           } else {
@@ -584,7 +665,7 @@ const handleListenPreviousButton = () => {
         };
         performanceStopTimeoutRef.current = setTimeout(checkInactivity, 100);
       })
-      .catch((err) => console.error("Erreur lors de l'obtention du stream pour la performance", err));
+      .catch((err) => console.error("Erreur lors de l’obtention du stream pour la performance", err));
   };
 
   // Arrête le performance recording en stoppant le MediaRecorder et en libérant le flux
@@ -606,7 +687,7 @@ const stopPerformanceRecording = () => {
     if (currentLearner && selectedSound) {
       let newEvaluations = currentLearner.evaluations ? { ...currentLearner.evaluations } : {};
       newEvaluations[selectedSound.id] = newEvaluations[selectedSound.id] || {};
-      // Sauvegarder l'évaluation pour la section jouée
+      // Sauvegarder l’évaluation pour la section jouée
       newEvaluations[selectedSound.id][currentSectionIndex] = colors;
       const updatedLearner = { ...currentLearner, evaluations: newEvaluations };
       updateLearner(updatedLearner);
@@ -615,13 +696,7 @@ const stopPerformanceRecording = () => {
   
   // Réinitialiser les handlers MIDI
   if (midiInputRef.current) {
-    midiInputRef.current.onmidimessage = (event) => {
-      const timestamp = performance.now() - recordStartTimeRef.current;
-      midiEventsRef.current.push({
-        data: event.data ? Array.from(event.data) : [],
-        timestamp,
-      });
-    };
+    midiInputRef.current.onmidimessage = globalMidiHandler;
   }
   
   // Nettoyer les timeouts
@@ -639,10 +714,10 @@ const stopPerformanceRecording = () => {
     async function loadCalibration() {
       try {
         setLoading(true);
-        setMainVideoReady(false); // Réinitialiser l'état de préparation
+        setMainVideoReady(false); // Réinitialiser l’état de préparation
         const config = await getCalibrationConfig("calibration-recorded");
         setCalibrationConfig(config);
-        // Ne pas mettre à true ici, cela sera fait par l'élément vidéo lui-même
+        // Ne pas mettre à true ici, cela sera fait par l’élément vidéo lui-même
       } catch (err) {
         console.error("Erreur lors du chargement de la configuration depuis Firebase:", err);
         // Fallback to localStorage
@@ -689,7 +764,7 @@ const stopPerformanceRecording = () => {
           
           const blob = new Blob([arrayBuffer], { type: mimeType });
           
-          // Créer un URL d'objet et le stocker
+          // Créer un URL d’objet et le stocker
           const objectURL = URL.createObjectURL(blob);
           localStorage.setItem("localPerformanceVideoURL", objectURL);
         }
@@ -772,7 +847,6 @@ const stopPerformanceRecording = () => {
   // Modified handleSavePosition to use Firebase
   const handleSavePosition = async () => {
     if (!currentLearnerName || !soundId) {
-      alert("Impossible de sauvegarder: l'apprenant ou le morceau n'est pas sélectionné");
       return;
     }
     try {
@@ -784,7 +858,6 @@ const stopPerformanceRecording = () => {
           perspectivePoints: recordedVideoPerspectivePoints
         }
       );
-      alert("Position sauvegardée !");
     } catch (err) {
       console.error("Erreur lors de la sauvegarde de la position :", err);
       
@@ -792,10 +865,8 @@ const stopPerformanceRecording = () => {
       try {
         localStorage.setItem("recordedVideoContainerPos", JSON.stringify(recordedVideoContainerPos));
         localStorage.setItem("recordedVideoPerspectivePoints", JSON.stringify(recordedVideoPerspectivePoints));
-        alert("Position sauvegardée localement (échec Firebase)");
       } catch (localErr) {
         console.error("Erreur lors de la sauvegarde locale:", localErr);
-        alert("Erreur lors de la sauvegarde de la position");
       }
     }
   };
@@ -810,7 +881,7 @@ const stopPerformanceRecording = () => {
         fetch(proxiedUrl)
           .then((res) => res.json())
           .then((midiData) => {
-            midiData.forEach((event: any) => {
+            midiData.forEach((event: MidiEvent) => {
               setTimeout(() => {
                 midiOutputRef.current?.send(event.data);
                 console.log(`Message MIDI envoyé: ${event.data} à ${event.timestamp} ms`);
@@ -856,7 +927,7 @@ const stopPerformanceRecording = () => {
     
     const currentLearner = learners.find(l => l.name === currentLearnerName);
     if (currentLearner) {
-      // Mise à jour de l'enregistrement pour y ajouter la note
+      // Mise à jour de l’enregistrement pour y ajouter la note
       const updatedRecordings = currentLearner.recordings.map(r => {
         if (r.name === selectedRecordingForNote) {
           return { ...r, notes: currentRecordingNote }; // notes ajouté juste après midiUrl
@@ -891,7 +962,6 @@ const stopPerformanceRecording = () => {
       }
     } catch (err) {
       console.error("Erreur lors de la suppression du recording:", err);
-      alert("Impossible de supprimer l'enregistrement");
     }
   };
 
@@ -900,7 +970,7 @@ const stopPerformanceRecording = () => {
     // Annuler tous les timeouts en attente
     scheduledTimeouts.current.forEach((timeout) => clearTimeout(timeout));
     scheduledTimeouts.current = [];
-    // Masquer immédiatement l'overlay
+    // Masquer immédiatement l’overlay
     setOverlayMessage(null);
     // Arrêter la vidéo principale et celle enregistrée
     if (videoRef.current) {
@@ -914,7 +984,7 @@ const stopPerformanceRecording = () => {
       midiOutputRef.current.send([0xB0, 64, 0]);
       midiOutputRef.current.send([0xB0, 123, 0]);
     }
-    // Arrêter l'enregistrement général s'il est en cours
+    // Arrêter l’enregistrement général s’il est en cours
     if (isRecording && mediaRecorder) {
       mediaRecorder.stop();
       recordStream?.getTracks().forEach(track => track.stop());
@@ -922,7 +992,7 @@ const stopPerformanceRecording = () => {
       setMediaRecorder(null);
       setRecordStream(null);
     }
-    // Arrêter le performance recording s'il est en cours
+    // Arrêter le performance recording s’il est en cours
     if (isPerformanceRecording && performanceRecorderRef.current) {
       performanceRecorderRef.current.stop();
       performanceStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -931,6 +1001,27 @@ const stopPerformanceRecording = () => {
     // Masquer la vidéo enregistrée et réafficher la vidéo de base
     setShowPerformancePlayback(false);
     setSelectedRecordedName("");
+    // Arrêter également le looper s’il est en cours
+    if (isLooping) {
+      if (loopRecorderRef.current) {
+        loopRecorderRef.current.stop();
+      }
+      if (loopStreamRef.current) {
+        loopStreamRef.current.getTracks().forEach(track => track.stop());
+      }
+      setIsLooping(false);
+      // Réinitialiser le ref pour la pédale
+      isLoopingRef.current = false;
+    }
+    
+    // Arrêter la lecture des loops
+    stopLoopPlayback();
+    if (midiInputRef.current) {
+      midiInputRef.current.onmidimessage = globalMidiHandler;
+    }
+
+    sendToSecond({ type: "SHOW_DEFAULT", url: selectedSound?.videoUrl });
+
   };
 
   // Ajout de la fonction handleSavePerformance - inchangée (upload sur Firebase)
@@ -950,43 +1041,80 @@ const stopPerformanceRecording = () => {
     const fileName = `${dateString}_${learnerName}_${songName}.webm`;
     
     try {
-      // Upload video to Firebase Storage
-      const videoUrl = await uploadVideo(fileName, performanceVideoURL);
-      
-      // Upload MIDI data to Firebase Storage
-      let midiUrl = "";
-      if (performanceMIDIEventsRef.current.length > 0) {
-        midiUrl = await uploadMidiData(fileName.replace(".webm", ".json"), performanceMIDIEventsRef.current);
+      // Si c’est une URL de type blob:, nous devons d’abord récupérer le contenu
+      if (performanceVideoURL.startsWith('blob:')) {
+        try {
+          const response = await fetch(performanceVideoURL);
+          const blob = await response.blob();
+          const reader = new FileReader();
+          reader.readAsDataURL(blob);
+          reader.onloadend = async () => {
+            try {
+              // Supprimer le préfixe pour avoir uniquement la partie base64
+              const base64data = reader.result as string;
+              const base64Clean = base64data.split(',')[1];
+              
+              uploadAndFinish(base64Clean);
+            } catch (err) {
+              console.error("Erreur lors de la conversion blob à base64:", err);
+            }
+          };
+        } catch (err) {
+          console.error("Erreur lors de la récupération du blob:", err);
+        }
+      } else if (performanceVideoURL.startsWith('data:')) {
+        // Pour les data URLs, extraire directement la partie base64
+        const base64Clean = performanceVideoURL.split(',')[1];
+        uploadAndFinish(base64Clean);
+      } else {
+        // Pour les URLs externes
+        uploadAndFinish(performanceVideoURL);
       }
-      
-      // Add recording to learner's profile
-      const recordingData = { name: fileName, videoUrl, midiUrl };
-      await addRecordingToLearner(learnerName, recordingData);
-      
-      // Update local state
-      const newVideo: RecordedVideo = { name: fileName, blobUrl: videoUrl, midiUrl };
-      setRecordedVideos(prev => [...prev, newVideo]);
-      
-      // Also update context
-      const currentLearner = learners.find(l => l.name === currentLearnerName);
-      if (currentLearner) {
-        const updatedLearner = {
-          ...currentLearner,
-          recordings: [...(currentLearner.recordings || []), recordingData]
-        };
-        await updateLearner(updatedLearner);
-      }
-      
-      // Réinitialiser la performance affichée pour réafficher la vidéo de base
-      setPerformanceVideoURL(null);
-      setShowPerformancePlayback(false);
     } catch (err) {
       console.error("Error saving performance to Firebase:", err);
-      alert("Erreur lors de la sauvegarde de la performance");
+    }
+    
+    // Fonction utilitaire pour terminer le processus d’upload
+    async function uploadAndFinish(videoData: string) {
+      try {
+        // Upload video to Firebase Storage
+        const videoUrl = await uploadVideo(fileName, videoData);
+        
+        // Upload MIDI data to Firebase Storage
+        let midiUrl = "";
+        if (performanceMIDIEventsRef.current.length > 0) {
+          midiUrl = await uploadMidiData(fileName.replace(".webm", ".json"), performanceMIDIEventsRef.current);
+        }
+        
+        // Add recording to learner’s profile
+        const recordingData = { name: fileName, videoUrl, midiUrl };
+        await addRecordingToLearner(learnerName, recordingData);
+        
+        // Update local state
+        const newVideo: RecordedVideo = { name: fileName, blobUrl: videoUrl, midiUrl };
+        setRecordedVideos(prev => [...prev, newVideo]);
+        
+        // Also update context
+        const currentLearner = learners.find(l => l.name === currentLearnerName);
+        if (currentLearner) {
+          const updatedLearner = {
+            ...currentLearner,
+            recordings: [...(currentLearner.recordings || []), recordingData]
+          };
+          await updateLearner(updatedLearner);
+        }
+        
+        // Réinitialiser la performance affichée pour réafficher la vidéo de base
+        setPerformanceVideoURL(null);
+        setShowPerformancePlayback(false);
+        
+      } catch (err) {
+        console.error("Error uploading to Firebase:", err);
+      }
     }
   };
 
-  // Update the onPointsChange handler to save calibration points to the sound document
+  // Update the onPointsChange handler to use the new handleCalibrationPointsChange function
   const handleCalibrationPointsChange = (newPoints: Points) => {
     if (selectedSound) {
       const updatedSound = { 
@@ -1017,13 +1145,13 @@ const stopPerformanceRecording = () => {
     preloadVideo.onloadedmetadata = () => {
       console.log("Vidéo préchargée avec dimensions:", preloadVideo.videoWidth, "x", preloadVideo.videoHeight);
 
-      // Stocker l'élément vidéo pour référence
+      // Stocker l’élément vidéo pour référence
       videoElRef.current = preloadVideo;
       
       // Marquer que la vidéo est prête à être utilisée
       setVideoLoading(false);
       
-      // Après un court délai supplémentaire pour s'assurer que tout est bien calculé
+      // Après un court délai supplémentaire pour s’assurer que tout est bien calculé
       setTimeout(() => {
         setMainVideoReady(true);
       }, 400);
@@ -1033,11 +1161,658 @@ const stopPerformanceRecording = () => {
     document.body.appendChild(preloadVideo);
     preloadVideo.load();
     
-    // Nettoyer l'élément au démontage
+    // Nettoyer l’élément au démontage
     return () => {
       document.body.removeChild(preloadVideo);
     };
   }, [selectedSound?.videoUrl]);
+
+  
+  // Ajoutons des fonctions utilitaires pour gérer IndexedDB pour les vidéos de loop
+const openLoopDatabase = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('mirrorFugueLoopsDB', 1);
+    
+    request.onerror = () => reject(new Error("Impossible d’ouvrir la base de données"));
+    
+    request.onupgradeneeded = (event) => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains('loops')) {
+        db.createObjectStore('loops', { keyPath: 'id' });
+      }
+    };
+    
+    request.onsuccess = () => resolve(request.result);
+  });
+};
+
+const saveLoopToIndexedDB = async (id: string, videoBlob: Blob): Promise<void> => {
+  try {
+    const db = await openLoopDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(['loops'], 'readwrite');
+      const store = transaction.objectStore('loops');
+      
+      const request = store.put({ id, videoBlob });
+      
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(new Error("Erreur lors de l’enregistrement de la vidéo"));
+      
+      transaction.oncomplete = () => db.close();
+    });
+  } catch (error) {
+    console.error("Erreur lors de la sauvegarde dans IndexedDB:", error);
+    throw error;
+  }
+};
+
+const getLoopFromIndexedDB = async (id: string): Promise<Blob | null> => {
+  try {
+    const db = await openLoopDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(['loops'], 'readonly');
+      const store = transaction.objectStore('loops');
+      
+      const request = store.get(id);
+      
+      request.onsuccess = () => {
+        resolve(request.result?.videoBlob || null);
+      };
+      
+      request.onerror = () => reject(new Error("Erreur lors de la récupération de la vidéo"));
+      
+      transaction.oncomplete = () => db.close();
+    });
+  } catch (error) {
+    console.error("Erreur lors de la récupération depuis IndexedDB:", error);
+    return null;
+  }
+};
+
+const deleteLoopFromIndexedDB = async (id: string): Promise<void> => {
+  try {
+    const db = await openLoopDatabase();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(['loops'], 'readwrite');
+      const store = transaction.objectStore('loops');
+      
+      const request = store.delete(id);
+      
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(new Error("Erreur lors de la suppression de la vidéo"));
+      
+      transaction.oncomplete = () => db.close();
+    });
+  } catch (error) {
+    console.error("Erreur lors de la suppression depuis IndexedDB:", error);
+    throw error;
+  }
+};
+
+const handleLoopRecording = () => {
+  if (!isLoopingRef.current) {
+    // si on est sur la 2ᵉ+ couche, relance la boucle avant de record
+    if (loopLayers.length > 0) startLoopPlayback(loopLayers);
+    startLoopRecord();
+  } else {
+    stopLoopRecord();
+  }
+};
+
+
+
+// Fonction pour démarrer/arrêter la lecture des loops
+const handleLoopPlayback = () => {
+  if (!isLoopPlaying) {
+    startLoopPlayback(loopLayers);
+  } else {
+    stopLoopPlayback();
+  }
+};
+
+// Fonction pour supprimer la dernière couche
+const handleRemoveLastLayer = async () => {
+  if (loopLayers.length === 0) return;
+  
+  // Arrêter toute lecture en cours
+  stopLoopPlayback();
+  
+  // Supprimer la dernière couche
+  const updatedLayers = loopLayers.slice(0, -1);
+  setLoopLayers(updatedLayers);
+  
+  // Supprimer de IndexedDB et localStorage
+  try {
+    const layerId = `loop_${loopLayers.length - 1}`;
+    await deleteLoopFromIndexedDB(layerId);
+    
+    // Mettre à jour localStorage
+    localStorage.setItem("mirrorFugueLoopLayers", JSON.stringify(updatedLayers.map((layer, index) => ({
+      ...layer,
+      videoUrl: `loop_${index}`
+    }))));
+  } catch (error) {
+    console.error("Erreur lors de la suppression de la couche:", error);
+  }
+  
+  // Si des couches restent, redémarrer la lecture
+  if (updatedLayers.length > 0) {
+    startLoopPlayback(updatedLayers);
+  }
+};
+
+// Fonction pour démarrer la lecture des loops avec correction pour assurer que le piano joue
+const startLoopPlayback = async (layers: any[]) => {
+  if (layers.length === 0) return;
+  
+  // Arrêter toute lecture en cours
+  stopLoopPlayback();
+  
+  try {
+    // On prend toujours la dernière couche pour la vidéo
+    const lastLayer = layers[layers.length - 1];
+    const layerId = `loop_${layers.length - 1}`;
+    
+    // Récupérer le blob de IndexedDB
+    const videoBlob = await getLoopFromIndexedDB(layerId);
+    
+    if (videoBlob) {
+      const videoUrl = URL.createObjectURL(videoBlob);
+      
+      // Afficher la vidéo de la dernière couche
+      setPerformanceVideoURL(videoUrl);
+      setShowPerformancePlayback(true);
+      setIsLocalVideo(true);
+      
+      // Collecter tous les événements MIDI de toutes les couches
+      let allMidiEvents: { data: number[], timestamp: number }[] = [];
+      layers.forEach(layer => {
+        if (layer.midiEvents && Array.isArray(layer.midiEvents)) {
+          // Copier les événements pour éviter de modifier les originaux
+          allMidiEvents = allMidiEvents.concat(layer.midiEvents.map((event: MidiEvent) => ({...event})));
+        }
+      });
+      
+      // Trier par timestamp pour s’assurer qu’ils sont joués dans l’ordre
+      allMidiEvents.sort((a, b) => a.timestamp - b.timestamp);
+      
+      console.log(`Total d’événements MIDI à jouer: ${allMidiEvents.length}`);
+      
+      // Calculer la durée totale de la plus longue séquence
+      const maxDuration = allMidiEvents.length > 0 
+        ? Math.max(...allMidiEvents.map(e => e.timestamp)) + 2000 // +2s pour s’assurer que tout est joué
+        : 5000; // Durée par défaut de 5 secondes
+      
+      console.log(`Durée totale de la séquence MIDI: ${maxDuration}ms`);
+      
+      // Fonction pour jouer tous les événements MIDI
+      const playMidiEvents = () => {
+        // S’assurer qu’il n’y a pas de notes bloquées
+        if (midiOutputRef.current) {
+          // Envoyer All Notes Off et reset controllers
+          midiOutputRef.current.send([0xB0, 123, 0]);
+          midiOutputRef.current.send([0xB0, 121, 0]);
+        }
+        
+        // Programmer la lecture de chaque événement MIDI avec le bon timing
+        allMidiEvents.forEach(event => {
+          setTimeout(() => {
+            if (midiOutputRef.current && Array.isArray(event.data)) {
+              console.log(`Envoi MIDI [${Date.now() % 10000}]: [${event.data.join(', ')}] à t=${event.timestamp}ms`);
+              try {
+                midiOutputRef.current.send(event.data);
+              } catch (err) {
+                console.error("Erreur lors de l’envoi MIDI:", err);
+              }
+            }
+          }, event.timestamp);
+        });
+        
+        console.log("Tous les événements MIDI ont été programmés");
+      };
+      
+      // Fonction pour démarrer la lecture synchronisée
+      const playLoopContent = () => {
+        if (loopVideoRef.current) {
+          console.log("Démarrage de la lecture synchronisée vidéo+MIDI");
+          
+          // Réinitialiser la vidéo
+          loopVideoRef.current.currentTime = 0;
+          
+          const playPromise = loopVideoRef.current.play();
+          playPromise.then(() => {
+            console.log("La lecture vidéo a démarré, lancement des événements MIDI");
+            playMidiEvents();
+          }).catch(err => {
+            console.error("Erreur lors de la lecture de la vidéo:", err);
+          });
+        }
+      };
+      
+      
+      // Configurer la loop
+      const setupLoop = () => {
+        if (loopVideoRef.current) {
+          // Configurer le handler pour détecter la fin de la vidéo
+          loopVideoRef.current.onended = () => {
+            console.log("Vidéo terminée, redémarrage de la loop");
+            playLoopContent();
+          };
+          
+          // Démarrage initial
+          playLoopContent();
+        }
+      };
+      
+      // Attendre que la vidéo soit chargée avant de commencer
+      if (loopVideoRef.current) {
+        loopVideoRef.current.onloadeddata = () => {
+          console.log("Vidéo chargée, configuration de la loop");
+          setupLoop();
+        };
+      }      
+      setIsLoopPlaying(true);
+    } else {
+      console.error("Vidéo non trouvée dans IndexedDB");
+    }
+  } catch (error) {
+    console.error("Erreur lors du démarrage de la lecture:", error);
+  }
+};
+
+// Fonction pour arrêter la lecture des loops avec améliorations pour nettoyer correctement
+const stopLoopPlayback = () => {
+  console.log("Arrêt de la lecture de loop");
+
+  // couper tous les timeouts MIDI en attente
+  scheduledTimeouts.current.forEach(clearTimeout);
+  scheduledTimeouts.current = [];
+
+
+  // Arrêter l’intervalle de boucle
+  if (loopIntervalRef.current) {
+    clearInterval(loopIntervalRef.current);
+    loopIntervalRef.current = null;
+  }
+  
+  // Arrêter la vidéo
+  if (loopVideoRef.current) {
+    loopVideoRef.current.pause();
+    
+    // Supprimer les handlers d’événements pour éviter des problèmes
+    loopVideoRef.current.onended = null;
+    loopVideoRef.current.onloadeddata = null;
+  }
+  
+  // Tout arrêter (toutes les notes off) et réinitialiser les contrôleurs
+  if (midiOutputRef.current) {
+    midiOutputRef.current.send([0xB0, 123, 0]); // All Notes Off
+    midiOutputRef.current.send([0xB0, 121, 0]); // Reset All Controllers
+  }
+  
+  setIsLoopPlaying(false);
+  setShowPerformancePlayback(false);
+};
+
+// Charger les couches précédemment sauvegardées depuis localStorage
+useEffect(() => {
+  const loadLoopLayers = async () => {
+    try {
+      const savedLayers = localStorage.getItem("mirrorFugueLoopLayers");
+      if (savedLayers) {
+        const parsedLayers = JSON.parse(savedLayers);
+        
+        // Récupérer tous les blobs vidéo depuis IndexedDB
+        const restoredLayers = await Promise.all(parsedLayers.map(async (layer: any, index: number) => {
+          const layerId = layer.videoUrl || `loop_${index}`;
+          const videoBlob = await getLoopFromIndexedDB(layerId);
+          
+          return {
+            ...layer,
+            videoUrl: videoBlob ? URL.createObjectURL(videoBlob) : ''
+          };
+        }));
+        
+        setLoopLayers(restoredLayers.filter((layer: any) => layer.videoUrl));
+      }
+    } catch (error) {
+      console.error("Erreur lors du chargement des loops:", error);
+    }
+  };
+  
+  loadLoopLayers();
+}, []);
+
+// Ajoutons une référence pour suivre l’état de la pédale gauche
+const leftPedalRef = useRef<boolean>(false);
+
+// Gestionnaire MIDI global : notes et pédale gauche
+const globalMidiHandler = (ev: MIDIMessageEvent) => {
+  if (!ev.data) return;
+  const [status, data1, data2] = ev.data;
+  
+  // Pédale gauche (control 67) - Détection améliorée
+  if ((status & 0xF0) === 0xB0 && data1 === 67) {
+    const pedalDown = data2 > 64;
+    
+    // Si la pédale est enfoncée (front montant) et n’était pas déjà enfoncée
+    if (pedalDown && !leftPedalRef.current) {
+      leftPedalRef.current = true;
+      setLeftPedalPressed(true);
+      
+      // La pédale gauche déclenche uniquement l’enregistrement/arrêt de loop
+      if (!isLoopingRef.current) {
+        // Démarrer l’enregistrement
+        startLoopRecord();
+      } else {
+        // Arrêter l’enregistrement
+        stopLoopRecord();
+      }
+    }
+    // Si la pédale est relâchée (front descendant) et était enfoncée
+    else if (!pedalDown && leftPedalRef.current) {
+      leftPedalRef.current = false;
+      setLeftPedalPressed(false);
+    }
+    return; // Ne pas traiter davantage cet événement
+  }
+  
+  // Envoyer immédiatement l’événement MIDI au port de sortie pour le jeu en direct
+  if (midiOutputRef.current) {
+    midiOutputRef.current.send(ev.data);
+  }
+  
+  // Enregistrement global (bouton blanc)
+  const ts = performance.now() - recordStartTimeRef.current;
+  midiEventsRef.current.push({ data: Array.from(ev.data), timestamp: ts });
+  
+  // Enregistrement de loop si actif
+  if (isLoopingRef.current) {
+    const lts = performance.now() - loopStartTimeRef.current;
+    loopMidiEventsRef.current.push({ data: Array.from(ev.data), timestamp: lts });
+  }
+};
+
+const startLoopRecord = () => {
+  if (!loopStreamRef.current) {
+    console.error("Stream Looper non disponible");
+    return;
+  }
+
+  console.log("Démarrage de l’enregistrement loop");
+
+  // --- 1) Fusion de la première couche MIDI (si elle existe) ---
+  // on prend uniquement la couche #0, pour l’effet “stack”
+  const firstLayerMidi = loopLayers[0]?.midiEvents || [];
+  // on clone pour ne pas modifier l’original
+  loopMidiEventsRef.current = firstLayerMidi.map(ev => ({
+    data: [...ev.data],
+    timestamp: ev.timestamp
+  }));
+
+  // on note le timestamp de démarrage
+  loopStartTimeRef.current = performance.now();
+
+  // --- 2) Configuration du MediaRecorder pour la vidéo ---
+  const recorder = new MediaRecorder(loopStreamRef.current!);
+  const chunks: BlobPart[] = [];
+
+  recorder.ondataavailable = (e) => {
+    if (e.data.size > 0) chunks.push(e.data);
+  };
+
+  // --- 3) IMPORTANT: Modifier le gestionnaire MIDI global pour capturer aussi les événements de la lecture ---
+  // Stocker le gestionnaire MIDI original pour le restaurer plus tard
+  const originalMidiHandler = midiInputRef.current?.onmidimessage;
+  
+  // Créer un nouveau gestionnaire qui capture tout
+  const recordAllMidiHandler = (ev: MIDIMessageEvent) => {
+    if (!ev.data) return;
+    const [status, data1, data2] = ev.data;
+    
+    // Envoyer l’événement au port de sortie comme d’habitude
+    if (midiOutputRef.current) {
+      midiOutputRef.current.send(ev.data);
+    }
+    
+    // Enregistrer TOUS les événements MIDI dans loopMidiEventsRef, 
+    // qu’ils viennent du clavier ou de la lecture de la loop existante
+    const lts = performance.now() - loopStartTimeRef.current;
+    loopMidiEventsRef.current.push({ data: Array.from(ev.data), timestamp: lts });
+    
+    // On continue de traiter pour l’enregistrement global
+    const ts = performance.now() - recordStartTimeRef.current;
+    midiEventsRef.current.push({ data: Array.from(ev.data), timestamp: ts });
+    
+    // Gérer la pédale gauche pour stopper l’enregistrement si nécessaire
+    if ((status & 0xF0) === 0xB0 && data1 === 67) {
+      const pedalDown = data2 > 64;
+      if (pedalDown && !leftPedalRef.current) {
+        leftPedalRef.current = true;
+        setLeftPedalPressed(true);
+      } else if (!pedalDown && leftPedalRef.current) {
+        leftPedalRef.current = false;
+        setLeftPedalPressed(false);
+        // Si c’était une relâche de pédale gauche, on stoppe l’enregistrement
+        if (isLoopingRef.current) {
+          stopLoopRecord();
+        }
+      }
+    }
+  };
+
+  // Installer notre gestionnaire sur l’entrée MIDI
+  if (midiInputRef.current) {
+    midiInputRef.current.onmidimessage = recordAllMidiHandler;
+  }
+  
+  // Installer aussi notre gestionnaire pour capturer les messages envoyés par midiOutputRef
+  // Sauvegarder l’implémentation originale de send
+  const originalSend = midiOutputRef.current?.send;
+  if (midiOutputRef.current && originalSend) {
+    // Remplacer par notre version qui capture les données
+    midiOutputRef.current.send = function(data) {
+      // Appeler l’implémentation originale
+      originalSend.call(this, data);
+      
+      // Enregistrer également cet événement s’il vient de la lecture de loop
+      // et n’a pas déjà été capturé par l’input handler
+      if (isLoopingRef.current && Array.isArray(data)) {
+        const lts = performance.now() - loopStartTimeRef.current;
+        loopMidiEventsRef.current.push({ data: Array.from(data), timestamp: lts });
+      }
+    };
+  }
+
+  recorder.onstop = async () => {
+    // Restaurer les handlers MIDI originaux
+    if (midiInputRef.current) {
+      midiInputRef.current.onmidimessage = originalMidiHandler || globalMidiHandler;
+    }
+    
+    // Restaurer l’implémentation originale de send
+    if (midiOutputRef.current && originalSend) {
+      midiOutputRef.current.send = originalSend;
+    }
+
+    if (chunks.length === 0) {
+      return;
+    }
+
+    // Création du blob et de la nouvelle "couche" fusionnée
+    const blob = new Blob(chunks, { type: "video/webm" });
+    const videoUrl = URL.createObjectURL(blob);
+
+    // on récupère TOUT le MIDI qu’on a dans loopMidiEventsRef.current
+    const mergedMidiEvents = [...loopMidiEventsRef.current];
+    // on peut trier si besoin (pas strictement nécessaire si timestamps toujours croissants)
+    mergedMidiEvents.sort((a, b) => a.timestamp - b.timestamp);
+
+    const mergedLayer = {
+      videoUrl,
+      midiEvents: mergedMidiEvents,
+      startTime: 0 // on remet à zéro puisque c’est notre “nouvelle” couche unique
+    };
+
+    // 4) On remplace toutes les couches par cette seule couche fusionnée
+    setLoopLayers([mergedLayer]);
+
+    // 5) Persistance (IndexedDB + localStorage) si tu veux garder la video / midi
+    localStorage.setItem(
+      "mirrorFugueLoopLayers",
+      JSON.stringify([{ videoUrl: "loop_0", midiEvents: mergedMidiEvents }])
+    );
+    await saveLoopToIndexedDB("loop_0", blob);
+
+    // 6) On relance la lecture de cette couche unique
+    startLoopPlayback([mergedLayer]);
+  };
+
+  // 7) On lance l’enregistrement
+  recorder.start();
+  loopRecorderRef.current = recorder;
+
+  // 8) On passe en mode record
+  setIsLooping(true);
+  isLoopingRef.current = true;
+};
+
+// Fonction pour arrêter l’enregistrement de loop
+const stopLoopRecord = () => {
+  console.log("Arrêt de l’enregistrement loop");
+  
+  // Arrêter le MediaRecorder
+  if (loopRecorderRef.current) {
+    loopRecorderRef.current.stop();
+    loopRecorderRef.current = null;
+  }
+  
+  // Mettre à jour les états
+  setIsLooping(false);
+  isLoopingRef.current = false;
+};
+
+// Fonction dédiée pour sauvegarder une loop sur Firebase
+const handleSaveLoop = async () => {
+  if (!isLoopPlaying || loopLayers.length === 0 || !currentLearnerName) {
+    return;
+  }
+  
+  try {
+    // 1. Récupérer la vidéo actuelle de loop (dernière couche)
+    const layerId = `loop_${loopLayers.length - 1}`;
+    const videoBlob = await getLoopFromIndexedDB(layerId);
+    
+    if (!videoBlob) {
+      return;
+    }
+    
+    // 2. Convertir le blob en base64 sans le préfixe "data:..."
+    const reader = new FileReader();
+    reader.readAsDataURL(videoBlob);
+    
+    reader.onloadend = async () => {
+      try {
+        const base64data = reader.result as string;
+        // CORRECTION: S’assurer que le format est correct pour Firebase
+        // Supprimer le préfixe data:video/webm;base64, pour avoir uniquement la partie base64
+        const base64Clean = base64data.split(',')[1];
+        
+        // 3. Créer un nom de fichier avec l’indication "loop"
+        const dateObj = new Date();
+        const day = String(dateObj.getDate()).padStart(2, "0");
+        const month = String(dateObj.getMonth() + 1).padStart(2, "0");
+        const year = dateObj.getFullYear();
+        const hh = String(dateObj.getHours()).padStart(2, "0");
+        const mm = String(dateObj.getMinutes()).padStart(2, "0");
+        const ss = String(dateObj.getSeconds()).padStart(2, "0");
+        const dateString = `${day}-${month}-${year}_${hh}h${mm}m${ss}`;
+        const learnerName = currentLearnerName;
+        const songName = selectedSound?.title || "UnknownSong";
+        // Ajouter "LOOP" dans le nom du fichier
+        const fileName = `${dateString}_${learnerName}_${songName}_LOOP.webm`;
+        
+        // 4. Upload vers Firebase
+        const videoUrl = await uploadVideo(fileName, base64Clean);
+        
+        // 5. Upload des données MIDI
+        let midiUrl = "";
+        if (loopLayers[0].midiEvents.length > 0) {
+          midiUrl = await uploadMidiData(fileName.replace(".webm", ".json"), loopLayers[0].midiEvents);
+        }
+        
+        // 6. Ajouter à la collection du learner
+        const recordingData = { name: fileName, videoUrl, midiUrl };
+        await addRecordingToLearner(learnerName, recordingData);
+        
+        // 7. Mise à jour des états locaux
+        const newVideo: RecordedVideo = { name: fileName, blobUrl: videoUrl, midiUrl };
+        setRecordedVideos(prev => [...prev, newVideo]);
+        
+        // 8. Mise à jour du contexte
+        const currentLearner = learners.find(l => l.name === currentLearnerName);
+        if (currentLearner) {
+          const updatedLearner = {
+            ...currentLearner,
+            recordings: [...(currentLearner.recordings || []), recordingData]
+          };
+          await updateLearner(updatedLearner);
+        }
+        
+      } catch (error) {
+        console.error("Erreur lors de l’enregistrement de la loop:", error);
+      }
+    };
+  } catch (error) {
+    console.error("Erreur lors de la préparation de la loop:", error);
+  }
+};
+
+// Fonction pour démarrer la lecture MIDI d’une loop
+const startLoopMidiPlayback = () => {
+  if (!loopLayers.length || !midiOutputRef.current) return;
+  
+  // S’assurer qu’il n’y a pas de notes bloquées
+  midiOutputRef.current.send([0xB0, 123, 0]); // All Notes Off
+  midiOutputRef.current.send([0xB0, 121, 0]); // Reset All Controllers
+  
+  // Récupérer les événements MIDI de la couche active
+  const midiEvents = loopLayers[0].midiEvents;
+  
+  // Jouer tous les événements avec le bon timing
+  midiEvents.forEach(event => {
+    setTimeout(() => {
+      if (midiOutputRef.current && isLoopPlaying) {
+        try {
+          midiOutputRef.current.send(event.data);
+        } catch (err) {
+          console.error("Erreur lors de l’envoi MIDI:", err);
+        }
+      }
+    }, event.timestamp);
+  });
+  
+  console.log(`${midiEvents.length} événements MIDI programmés pour la lecture`);
+};
+
+// ------------------------------------------------------------------
+// Fonction utilitaire pour rejouer le MIDI d’un enregistrement
+const playRecordedMidi = () => {
+  if (!selectedRecordedVideo?.midiUrl || !midiOutputRef.current) return;
+  const proxied = getProxiedUrl(selectedRecordedVideo.midiUrl);
+  fetch(proxied)
+    .then(res => res.json())
+    .then((midiData: MidiEvent[]) => {
+      midiData.forEach(event => {
+        setTimeout(() => {
+          midiOutputRef.current?.send(event.data);
+        }, event.timestamp);
+      });
+    })
+    .catch(err => console.error("Impossible de charger le JSON MIDI:", err));
+};
+// ------------------------------------------------------------------
+
 
   if (loading) {
     return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}>
@@ -1047,6 +1822,37 @@ const stopPerformanceRecording = () => {
 
   return (
     <div style={{ padding: "1rem", fontFamily: "Arial, sans-serif", width: "100%" }}>
+      {/* ─── Contrôle du delay vidéo ────────────────────────────────── */}
+      <div style={{
+        position: "fixed",
+        top: "1rem",
+        right: "1rem",
+        background: "rgba(0,0,0,0.5)",
+        padding: "0.5rem 0.75rem",
+        borderRadius: "4px",
+        zIndex: 2000,
+        color: "#fff",
+        fontSize: "0.85rem"
+      }}>
+        <label>
+          Delay vidéo (ms):
+          <input
+            type="number"
+            value={videoDelayMs}
+            onChange={e => setVideoDelayMs(Number(e.target.value))}
+            style={{
+              width: "60px",
+              marginLeft: "0.5rem",
+              fontSize: "0.85rem",
+              padding: "2px 4px",
+              borderRadius: "2px",
+              border: "1px solid #ccc"
+            }}
+          />
+        </label>
+      </div>
+      {/* ──────────────────────────────────────────────────────────────── */}
+
       {overlayMessage && (
         <div
           style={{
@@ -1109,14 +1915,14 @@ const stopPerformanceRecording = () => {
                       height: "auto",
                     }}
                     onLoadedData={() => {
-                      // S'assurer que le délai VIDEO_DELAY_MS est respecté
+                      // S’assurer que le délai VIDEO_DELAY_MS est respecté
                       setTimeout(() => {
                         if (performanceVideoRef.current) {
                           performanceVideoRef.current.play().catch(err => 
                             console.error("Erreur lors de la lecture de la vidéo locale:", err)
                           );
                         }
-                      }, VIDEO_DELAY_MS); // Utiliser la constante VIDEO_DELAY_MS
+                      }, videoDelayMs); // Utiliser la constante VIDEO_DELAY_MS
                     }}
                     onEnded={() => setShowPerformancePlayback(false)}
                   />
@@ -1130,7 +1936,7 @@ const stopPerformanceRecording = () => {
       <div style={{ position: "relative", marginBottom: "1rem" }}>
         <div style={{ position: "absolute", left: 0, top: 0 }}>
           <Link href="/learner/select-sound">
-            <button style={{ backgroundColor: "#0070f3", color: "#fff", padding: "0.5rem 1rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "1.2rem" }}>
+            <button style={{ backgroundColor: "#0070f3", color: "#fff", padding: "0.5rem 1rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "0.8rem" }}>
               Back
             </button>
           </Link>
@@ -1164,14 +1970,17 @@ const stopPerformanceRecording = () => {
               borderRadius: "4px",
               border: "none",
               cursor: "pointer",
-              fontSize: "0.8rem",
+              fontSize: "0.5rem",
             }}
           >
             Save Position
           </button>
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <IOSSwitch checked={editable} onChange={() => setEditable(!editable)} />
-            <span style={{ fontSize: "0.9rem" }}>Edit Transform</span>
+            <IOSSwitch checked={editable} 
+            onChange={() => {
+              setEditable(!editable); 
+              sendToSecond({ type: "TOGGLE_EDIT", editable: !editable });}}/>
+            <span style={{ fontSize: "0.5rem" }}>Edit Transform</span>
           </div>
         </>
       )}
@@ -1200,20 +2009,23 @@ const stopPerformanceRecording = () => {
         <button onClick={handleRecordButton} style={{ backgroundColor: "#dc3545", color: "#fff", padding: "0.5rem 1rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "1.2rem", animation: isRecording ? "blinkRecord 0.7s infinite" : "none" }}>
           ⬤
         </button>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+        <div style={{ display: "flex", alignItems: "center",fontSize: "0.5rem", gap: "0.3rem" }}>
           <span>Speed:</span>
-          <input type="range" min="0.10" max="2" step="0.1" value={playbackSpeed} onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))} list="tickmarks" style={{ cursor: "pointer" }} />
+          <input type="range" min="0.10" max="2" step="0.1" value={playbackSpeed} onChange={(e) => {
+            const newSpeed = parseFloat(e.target.value);
+            setPlaybackSpeed(newSpeed);
+          }} list="tickmarks" style={{ cursor: "pointer" }} />
           <datalist id="tickmarks">
             <option value="1" label="1"></option>
           </datalist>
           <span>{playbackSpeed.toFixed(1)}x</span>
         </div>
         {recordedVideos.length > 0 && (
-          <div style={{ position: "relative", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+          <div style={{ position: "relative", fontSize: "0.8rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <span>Recorded:</span>
             <button
               onClick={() => setDropdownOpen(!dropdownOpen)}
-              style={{ padding: "4px 8px", borderRadius: "4px", border: "1px solid #ccc", fontSize: "0.9rem", cursor: "pointer", width: "250px", whiteSpace: "nowrap" }}
+              style={{ padding: "4px 8px", borderRadius: "4px", border: "1px solid #ccc", fontSize: "0.8rem", cursor: "pointer", width: "150px", whiteSpace: "nowrap" }}
             >
               {selectedRecordedName ? formatDisplay(selectedRecordedName) : "-- Select --"}
             </button>
@@ -1238,7 +2050,7 @@ const stopPerformanceRecording = () => {
                       borderBottom: "1px solid #eee",
                       whiteSpace: "nowrap"
                     }}
-                    onClick={() => { setSelectedRecordedName(rv.name); setDropdownOpen(false); }}
+                    onClick={() => { setSelectedRecordedName(rv.name); setDropdownOpen(false); sendToSecond({ type: "SHOW_RECORDED", url: rv.blobUrl }); }}
                   >
                     <span onClick={(e) => { e.stopPropagation(); handleDeleteRecording(rv.name); }} style={{ cursor: "pointer", color: "red", marginRight: "4px" }}>x</span>
                     <span>{formatDisplay(rv.name)}</span>
@@ -1254,6 +2066,81 @@ const stopPerformanceRecording = () => {
             )}
           </div>
         )}
+        {/* Nouveaux boutons du Looper avec un style distinctif */}
+        <div style={{ 
+          display: "flex", 
+          alignItems: "center", 
+          gap: "0.2rem", 
+          backgroundColor: "#e0f7fa", 
+          padding: "0.2rem 0.4rem", 
+          borderRadius: "6px",
+          border: "1px solid #4dd0e1"
+        }}>
+          <span style={{ fontSize: "0.7rem", fontWeight: "bold", color: "#00838f" }}>LOOPER:</span>
+          <button 
+            onClick={handleLoopRecording} 
+            style={{ 
+              backgroundColor: isLooping ? "#ff5722" : "#009688", 
+              color: "#fff", 
+              padding: "0.2rem 0.5rem", 
+              borderRadius: "4px", 
+              border: "none", 
+              cursor: "pointer", 
+              fontSize: "0.8rem",
+              animation: isLooping ? "blinkRecord 0.7s infinite" : "none"
+            }}
+          >
+            {isLooping ? "⏹ STOP" : "🔴 REC"}
+          </button>
+          <button 
+            onClick={handleLoopPlayback}
+            disabled={loopLayers.length === 0} 
+            style={{ 
+              backgroundColor: isLoopPlaying ? "#ff9800" : "#4caf50", 
+              color: "#fff", 
+              padding: "0.2rem 0.5rem", 
+              borderRadius: "4px", 
+              border: "none", 
+              cursor: loopLayers.length > 0 ? "pointer" : "not-allowed", 
+              fontSize: "0.8rem",
+              opacity: loopLayers.length > 0 ? 1 : 0.5,
+            }}
+          >
+            {isLoopPlaying ? "⏸ PAUSE" : "▶ PLAY"}
+          </button>
+          <button 
+            onClick={handleRemoveLastLayer}
+            disabled={loopLayers.length === 0} 
+            style={{ 
+              backgroundColor: "#f44336", 
+              color: "#fff", 
+              padding: "0.2rem 0.5rem", 
+              borderRadius: "4px", 
+              border: "none", 
+              cursor: loopLayers.length > 0 ? "pointer" : "not-allowed", 
+              fontSize: "0.8rem",
+              opacity: loopLayers.length > 0 ? 1 : 0.5,
+            }}
+          >
+            🗑 LAYER
+          </button>
+          <button 
+            onClick={handleSaveLoop}
+            disabled={loopLayers.length === 0} 
+            style={{ 
+              backgroundColor: "#3f51b5", 
+              color: "#fff", 
+              padding: "0.2rem 0.5rem", 
+              borderRadius: "4px", 
+              border: "none", 
+              cursor: loopLayers.length > 0 ? "pointer" : "not-allowed", 
+              fontSize: "0.8rem",
+              opacity: loopLayers.length > 0 ? 1 : 0.5,
+            }}
+          >
+            💾 SAVE
+          </button>
+        </div>
       </div>
       
       {/* Modal pour la saisie des notes */}
@@ -1300,37 +2187,74 @@ const stopPerformanceRecording = () => {
               }}
             >
               <PerspectiveTransform
-                // Use the same saved configuration as the recorded video section
                 points={recordedVideoPerspectivePoints || { topLeft: { x: 0, y: 0 }, topRight: { x: 640, y: 0 }, bottomRight: { x: 640, y: 360 }, bottomLeft: { x: 0, y: 360 } }}
                 editable={false}
               >
-                {/* IMPORTANT: Au lieu d'utiliser ContentMedia, on utilise un élément video HTML standard pour les data:URLs */}
+                {/* IMPORTANT: Utiliser deux éléments vidéo différents selon le mode (looper ou lecture unique) */}
                 {isLocalVideo ? (
-                  <video
-                    ref={performanceVideoRef}
-                    src={performanceVideoURL}
-                    autoPlay={false} // Changer à false pour contrôler manuellement le démarrage
-                    playsInline
-                    style={{
-                      position: "absolute",
-                      left: -absoluteVideoOffset.x,
-                      top: -absoluteVideoOffset.y,
-                      width: "640px",
-                      height: "auto",
-                    }}
-                    onLoadedData={() => {
-                      // S'assurer que le délai VIDEO_DELAY_MS est respecté
-                      setTimeout(() => {
-                        if (performanceVideoRef.current) {
-                          performanceVideoRef.current.play().catch(err => 
+                  isLoopPlaying ? (
+                    // Vidéo du looper — avec boucle
+                    <video
+                      ref={el => {
+                        loopVideoRef.current = el
+                        performanceVideoRef.current = el
+                      }}
+                      src={performanceVideoURL!}
+                      playsInline
+                      style={{
+                        position: "absolute",
+                        left: -absoluteVideoOffset.x,
+                        top: -absoluteVideoOffset.y,
+                        width: "640px",
+                        height: "auto",
+                      }}
+                      onLoadedData={() => {
+                        // Démarre vidéo + MIDI en une fois, sans délai
+                        loopVideoRef.current?.play().catch(console.error)
+                        startLoopMidiPlayback()
+                      }}
+                      onEnded={() => {
+                        // Quand la vidéo s’arrête, couper le piano
+                        if (!isLoopPlaying) {
+                          midiOutputRef.current?.send([0xB0, 123, 0])
+                          midiOutputRef.current?.send([0xB0, 121, 0])
+                          return
+                        }
+                        // Si on est toujours en mode loop, relance vidéo+MIDI en synchro
+                        loopVideoRef.current!.currentTime = 0
+                        loopVideoRef.current!.play().catch(console.error)
+                        startLoopMidiPlayback()
+                      }}
+                    />
+                  ) : (
+                    // Vidéo pour la lecture unique (bouton ⟲)
+                    <video
+                      ref={performanceVideoRef}
+                      src={performanceVideoURL!}
+                      playsInline
+                      style={{
+                        position: "absolute",
+                        left: -absoluteVideoOffset.x,
+                        top: -absoluteVideoOffset.y,
+                        width: "640px",
+                        height: "auto",
+                      }}
+                      onLoadedData={() => {
+                        setTimeout(() => {
+                          performanceVideoRef.current?.play().catch(err =>
                             console.error("Erreur lors de la lecture de la vidéo locale:", err)
                           );
+                        }, videoDelayMs);
+                      }}
+                      onEnded={() => {
+                        if (!isLoopPlaying) {
+                          setShowPerformancePlayback(false);
                         }
-                      }, VIDEO_DELAY_MS); // Utiliser la constante VIDEO_DELAY_MS
-                    }}
-                    onEnded={() => setShowPerformancePlayback(false)}
-                  />
+                      }}
+                    />
+                  )
                 ) : (
+                  // Pour les vidéos non-locales (URLs distantes)
                   <ContentMedia
                     ref={performanceVideoRef}
                     path={performanceVideoURL}
@@ -1338,7 +2262,7 @@ const stopPerformanceRecording = () => {
                     onLoadedData={() => {
                       setTimeout(() => {
                         performanceVideoRef.current?.play();
-                      }, VIDEO_DELAY_MS);
+                      }, videoDelayMs);
                     }}
                     onEnded={() => setShowPerformancePlayback(false)}
                     style={{
@@ -1356,7 +2280,7 @@ const stopPerformanceRecording = () => {
         </Rnd>
       ) : null}
       {/* Conteneur pour la vidéo par défaut (vidéo enregistrée depuis la liste déroulante) */}
-      {!showPerformancePlayback && !videoLoading && (
+      {!videoLoading && (
         <div
           id="defaultVideoContainer"
           style={{
@@ -1364,8 +2288,12 @@ const stopPerformanceRecording = () => {
             width: "100%",
             maxWidth: "1200px",
             overflow: "visible",
-            display: selectedRecordedName ? "none" : "block",
-            visibility: mainVideoReady ? "visible" : "hidden"
+            display: "block", // Toujours présent dans le DOM
+            visibility: mainVideoReady ? "visible" : "hidden",
+            position: "relative", 
+            zIndex: 1, // Z-index inférieur pour rester sous les autres vidéos
+            opacity: selectedRecordedName || showPerformancePlayback ? 0 : 1, // Transparent quand d’autres vidéos sont actives
+            transition: "opacity 0.3s ease" // Transition douce
           }}
         >
           <PerspectiveTransform
@@ -1389,7 +2317,7 @@ const stopPerformanceRecording = () => {
         </div>
       )}
       {/* Conteneur pour les vidéos enregistrées du profil (sélectionnées dans la liste déroulante) */}
-      {selectedRecordedName && !showPerformancePlayback && (
+      {selectedRecordedName && (
         <Rnd position={recordedVideoContainerPos} onDragStop={(e, d) => setRecordedVideoContainerPos({ x: d.x, y: d.y })}>
           <div
             id="recordedVideoContainer"
@@ -1398,6 +2326,8 @@ const stopPerformanceRecording = () => {
               height: absoluteCrop ? absoluteCrop.height : 360,
               position: "relative",
               overflow: "visible",
+              zIndex: 2, // Higher z-index to appear on top of the default video
+              visibility: showPerformancePlayback ? "hidden" : "visible" // Hide when performance video is active, but keep in DOM
             }}
           >
             <div
@@ -1416,28 +2346,46 @@ const stopPerformanceRecording = () => {
                 editable={editable}
                 toggleKeys={["v"]}
                 enableGroupDrag
-                // Met à jour les points lors d'un changement
+                // Met à jour les points lors d’un changement
                 onPointsChange={(newPoints: Points) => setRecordedVideoPerspectivePoints(newPoints)}
               >
-                <ContentMedia
-                  ref={recordedVideoRef}
-                  path={selectedRecordedVideo?.blobUrl || ""}
-                  type="video"
-                  controls
-                  onLoadedData={() => {
-                    setTimeout(() => {
-                      recordedVideoRef.current?.play();
-                    }, VIDEO_DELAY_MS);
-                  }}
-                  onEnded={() => setSelectedRecordedName("")}
-                  style={{
-                    position: "absolute",
-                    left: absoluteVideoOffset ? -absoluteVideoOffset.x : 0,
-                    top: absoluteVideoOffset ? -absoluteVideoOffset.y : 0,
-                    width: "640px",
-                    height: "auto",
-                  }}
-                />
+                {/* ─── Vidéo enregistrée — boucle si "_LOOP" ──────────────────── */}
+                {(() => {
+                  const isLoop = selectedRecordedName.toLowerCase().endsWith("_loop.webm");
+                  return (
+                    <video
+                      ref={recordedVideoRef}
+                      src={selectedRecordedVideo?.blobUrl}
+                      controls
+                      style={{
+                        position: "absolute",
+                        left: absoluteVideoOffset ? -absoluteVideoOffset.x : 0,
+                        top: absoluteVideoOffset ? -absoluteVideoOffset.y : 0,
+                        width: "640px",
+                        height: "auto",
+                      }}
+                      onLoadedData={() => {
+                        setTimeout(() => {
+                          recordedVideoRef.current?.play();
+                          if (isLoop) playRecordedMidi();
+                        }, videoDelayMs);
+                      }}
+                      onEnded={() => {
+                        if (isLoop) {
+                          // remet au début et reboucle
+                          recordedVideoRef.current!.currentTime = 0;
+                          recordedVideoRef.current!.play();
+                          playRecordedMidi();
+                        } else {
+                          // comportement par défaut
+                          setSelectedRecordedName("");
+                        }
+                      }}
+                    />
+                  );
+                })()}
+                {/* ──────────────────────────────────────────────────────────────── */}
+
               </PerspectiveTransform>
             </div>
           </div>
