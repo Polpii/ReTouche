@@ -49,6 +49,7 @@ export default function MidiFallingNotes({
 
         ctx.fillStyle = WHITE_KEYS.includes(ev.midi % 12) ? "#ffd54f" : "#ff9800";
         ctx.fillRect(x, y - 6, keyW, 6);
+        cvs.style.background = "transparent"; // Pas de grille
       });
       requestAnimationFrame(draw);
     }
