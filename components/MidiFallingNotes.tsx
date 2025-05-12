@@ -47,7 +47,7 @@ export default function MidiFallingNotes({
         const x = ((ev.midi - FIRST_MIDI) / (NB_KEYS - 1)) * width;
         const y = (1 - dt / LOOKAHEAD) * height;   // 0 → top, height → ligne du bas
 
-        ctx.fillStyle = WHITE_KEYS.includes(ev.midi % 12) ? "#ffd54f" : "#ff9800";
+        ctx.fillStyle = WHITE_KEYS.includes(ev.midi % 12) ? "#ffd54f" : "#000000";
         ctx.fillRect(x, y - 6, keyW, 6);
         cvs.style.background = "transparent"; // Pas de grille
       });

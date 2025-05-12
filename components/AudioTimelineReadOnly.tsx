@@ -1,170 +1,311 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 "use client";
-import React, { useEffect, useRef, useState } from "react";
-import { Midi } from "@tonejs/midi";
-import { getContentUrl } from '../app/services/contentService';
-import { getProxiedUrl } from '../app/utils/proxyUrl';
 
+import React, {
+  useEffect,
+  useRef,
+  useState,
+  MouseEvent as ReactMouseEvent,
+} from "react";
+import { Midi } from "@tonejs/midi";
+import { getProxiedUrl } from "../app/utils/proxyUrl";
+
+/* ─────────── types ─────────── */
 export interface Section {
   id: string;
-  start: number; // en secondes
-  end: number;   // en secondes
+  start: number;
+  end: number;
   performanceScore?: number;
 }
-
-export interface AudioTimelineReadOnlyProps {
-  midiUrl?: string;         // URL du fichier MIDI
-  totalTime: number;        // Durée totale en secondes
-  containerHeight?: number; // Hauteur du conteneur (par défaut 100px)
-  sections: Section[];      // Liste des sections
-  onPlaySection: (section: Section) => void; // Callback quand on clique sur une section
-  currentTime?: number;     // Position de lecture en secondes
-  noteColors?: string[];    // Couleurs par note, optionnel
+interface Props {
+  midiUrl?: string;
+  totalTime: number;
+  sections: Section[];
+  onPlaySection: (s: Section) => void;
+  containerHeight?: number;
+  currentTime?: number;
+  noteColors?: string[];
 }
 
-const AudioTimelineReadOnly: React.FC<AudioTimelineReadOnlyProps> = ({
+/* ─────────── helpers ─────────── */
+const DEFAULT_H = 200;
+const clamp = (v: number, a: number, b: number) =>
+  Math.max(a, Math.min(b, v));
+
+/* =================================================================== */
+const AudioTimelineReadOnly: React.FC<Props> = ({
   midiUrl,
   totalTime,
-  containerHeight = 100,
   sections,
   onPlaySection,
+  containerHeight = DEFAULT_H,
   currentTime,
-  noteColors = []  // Couleur par défaut : vide = rouge par défaut
+  noteColors = [],
 }) => {
-  const timelineRef = useRef<HTMLDivElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  /* refs & states */
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // État pour les marqueurs fusionnés (supprimés)
-  const [removedMarkers, setRemovedMarkers] = useState<Set<string>>(new Set());
-  
-  const toggleMarker = (id: string) => {
-    setRemovedMarkers(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(id)) {
-        newSet.delete(id);
-      } else {
-        newSet.add(id);
-      }
-      return newSet;
+  /* copie locale de `sections` pour le drag (aucune persistance) */
+  const [local, setLocal] = useState<Section[]>(sections);
+  useEffect(() => setLocal(sections), [sections]);
+
+  /* marqueurs supprimés (= frontières fusionnées) */
+  const [removed, setRemoved] = useState<Set<string>>(new Set());
+  const toggle = (id: string) =>
+    setRemoved((s) => {
+      const n = new Set(s);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+
+  /* ────────── drag des triangles ────────── */
+  const drag = useRef<{ idx: number; start: number; px: number } | null>(null);
+  const onStartDrag =
+    (idx: number) =>
+    (e: ReactMouseEvent): void => {
+      if (!timelineRef.current) return;
+      const { left } = timelineRef.current.getBoundingClientRect();
+      drag.current = { idx, start: local[idx].start, px: e.clientX - left };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onStop);
+    };
+
+  const onMove = (e: MouseEvent) => {
+    if (!drag.current || !timelineRef.current) return;
+    const { idx, start, px } = drag.current;
+    const { left, width } = timelineRef.current.getBoundingClientRect();
+    const delta = ((e.clientX - left - px) / width) * totalTime;
+
+    setLocal((prev) => {
+      const n = [...prev];
+      const newStart = clamp(
+        start + delta,
+        idx === 0 ? 0 : n[idx - 1].start + 0.1,
+        idx === n.length - 1 ? totalTime - 0.1 : n[idx + 1].end - 0.1
+      );
+      if (idx > 0) n[idx - 1] = { ...n[idx - 1], end: newStart };
+      n[idx] = { ...n[idx], start: newStart };
+      return n;
     });
   };
 
-  useEffect(() => {
-    const loadMidi = async () => {
-      if (!midiUrl || !canvasRef.current || !timelineRef.current) return;
-      
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-      
-      try {
-        // Always use the proxy for external URLs to avoid CORS issues
-        const proxiedUrl = getProxiedUrl(midiUrl);
-        console.log("Loading MIDI from proxied URL:", proxiedUrl);
-        
-        const response = await fetch(proxiedUrl);
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const arrayBuffer = await response.arrayBuffer();
-        const midi = new Midi(arrayBuffer);
-        
-        let allNotes: any[] = [];
-        midi.tracks.forEach((track) => {
-          allNotes = allNotes.concat(track.notes);
-        });
-        allNotes.sort((a, b) => a.time - b.time);
-        
-        allNotes.forEach((note, index) => {
-          const x = (note.time / totalTime) * canvas.width;
-          const width = (note.duration / totalTime) * canvas.width;
-          const minNote = 21, maxNote = 108;
-          const noteRange = maxNote - minNote;
-          const y = canvas.height - ((note.midi - minNote) / noteRange) * canvas.height;
-          const noteHeight = 4;
-          ctx.fillStyle = noteColors[index] ? noteColors[index] : "red";
-          ctx.fillRect(x, y - noteHeight / 2, width, noteHeight);
-        });
-      } catch (error) {
-        console.error("Error loading MIDI file:", error);
-      }
-    };
+  const onStop = () => {
+    drag.current = null;
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onStop);
+  };
 
-    if (!timelineRef.current || !canvasRef.current) return;
-    
+  /* ────────── canvas : piano-roll ────────── */
+  useEffect(() => {
+    if (!midiUrl || !canvasRef.current || !timelineRef.current) return;
+
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    
-    const rect = timelineRef.current.getBoundingClientRect();
-    canvas.width = rect.width;
-    canvas.height = rect.height;
 
-    // Fond : grille
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = "#ddd";
-    for (let x = 0; x < canvas.width; x += 50) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, canvas.height);
-      ctx.stroke();
-    }
-    for (let y = 0; y < canvas.height; y += 10) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(canvas.width, y);
-      ctx.stroke();
-    }
+    const resize = () => {
+      canvas.width = timelineRef.current!.getBoundingClientRect().width;
+      canvas.height = containerHeight;
+    };
+    resize();
+    window.addEventListener("resize", resize);
 
-    // Dessin du piano roll à partir du MIDI
-    if (midiUrl) {
-      loadMidi();
-    }
+    (async () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = "#eee";
+      for (let x = 0; x <= canvas.width; x += 50) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+      }
+
+      try {
+        const buf = await fetch(getProxiedUrl(midiUrl)).then((r) =>
+          r.arrayBuffer()
+        );
+        const midi = new Midi(buf);
+        let notes: any[] = [];
+        midi.tracks.forEach((t) => (notes = notes.concat(t.notes)));
+        notes.sort((a, b) => a.time - b.time);
+
+        const min = 21,
+          max = 108,
+          rng = max - min;
+        notes.forEach((n, i) => {
+          const x = (n.time / totalTime) * canvas.width;
+          const w = (n.duration / totalTime) * canvas.width;
+          const y = canvas.height - ((n.midi - min) / rng) * canvas.height;
+          ctx.fillStyle = noteColors[i] ?? "red";
+          ctx.fillRect(x, y - 2, w, 4);
+        });
+      } catch (err) {
+        console.error("MIDI load error:", err);
+      }
+    })();
+
+    return () => window.removeEventListener("resize", resize);
   }, [midiUrl, totalTime, containerHeight, noteColors]);
 
-  const sortedSections = [...sections].sort((a, b) => a.start - b.start);
-  
-  // Calculer les groupes fusionnés en considérant que chaque marker (à partir du 2ème élément)
-  // correspond à la séparation entre la section précédente et la section courante.
-  // Si le marker (section.id) est retiré, la section courante est fusionnée avec le groupe en cours.
-  const mergedGroups: Array<{ group: typeof sortedSections, left: number, right: number }> = [];
-  if(sortedSections.length > 0){
-    let currentGroup = [sortedSections[0]];
-    for (let i = 1; i < sortedSections.length; i++) {
-      if( removedMarkers.has(sortedSections[i].id) ){
-        currentGroup.push(sortedSections[i]);
-      } else {
-        mergedGroups.push({
-          group: currentGroup,
-          left: currentGroup[0].start,
-          right: currentGroup[currentGroup.length - 1].end,
-        });
-        currentGroup = [sortedSections[i]];
-      }
+  /* ────────── lecture fusionnée ────────── */
+  const playFrom = (sec: Section) => {
+    /* cherche la fin du groupe fusionné */
+    const idx = local.findIndex((s) => s.id === sec.id);
+    let end = sec.end;
+    for (let i = idx + 1; i < local.length; i++) {
+      if (removed.has(local[i].id)) end = local[i].end;
+      else break;
     }
-    mergedGroups.push({
-      group: currentGroup,
-      left: currentGroup[0].start,
-      right: currentGroup[currentGroup.length - 1].end,
-    });
-  }
+    onPlaySection({ id: sec.id, start: sec.start, end });
+  };
+
+  /* ────────── rendu ────────── */
+  const elems: React.ReactNode[] = [];
+
+  local.forEach((sec, i) => {
+    const leftPct = (sec.start / totalTime) * 100;
+    const widthPct = ((sec.end - sec.start) / totalTime) * 100;
+
+    /* zone de clic sur toute la section */
+    elems.push(
+      <div
+        key={`zone-${sec.id}`}
+        style={{
+          position: "absolute",
+          left: `${leftPct}%`,
+          width: `${widthPct}%`,
+          top: 0,
+          bottom: 0,
+          cursor: "pointer",
+          zIndex: 1,
+        }}
+        onClick={() => playFrom(sec)}
+      />
+    );
+
+    /* trait violet */
+    elems.push(
+      <div
+        key={`line-${sec.id}`}
+        style={{
+          position: "absolute",
+          left: `${leftPct}%`,
+          top: 0,
+          bottom: 0,
+          width: 2,
+          background: "#800080",
+          opacity: removed.has(sec.id) ? 0.35 : 1,
+        }}
+      />
+    );
+
+    /* triangle drag (tous sauf peut-être le premier) */
+    if (i !== 0)
+      elems.push(
+        <div
+          key={`tri-${sec.id}`}
+          style={{
+            position: "absolute",
+            left: `${leftPct}%`,
+            top: -30,
+            transform: "translateX(-50%)",
+            cursor: "ew-resize",
+            zIndex: 3,
+          }}
+          onMouseDown={onStartDrag(i)}
+        >
+          <div
+            style={{
+              width: 0,
+              height: 0,
+              borderLeft: "18px solid transparent",
+              borderRight: "18px solid transparent",
+              borderTop: "20px solid #800080",
+            }}
+          />
+        </div>
+      );
+
+    /* bouton ✕ / ⟲  (fusion) */
+    if (i !== 0)
+      elems.push(
+        <div
+          key={`merge-${sec.id}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            toggle(sec.id);
+          }}
+          style={{
+            position: "absolute",
+            left: `${leftPct}%`,
+            bottom: -24,
+            transform: "translateX(-50%)",
+            background: "#fff",
+            border: "1px solid #ccc",
+            borderRadius: "50%",
+            width: 20,
+            height: 20,
+            textAlign: "center",
+            lineHeight: "19px",
+            fontSize: 14,
+            cursor: "pointer",
+            userSelect: "none",
+            zIndex: 4,
+          }}
+        >
+          {removed.has(sec.id) ? "⟲" : "×"}
+        </div>
+      );
+
+    /* bouton Play (au-dessus du trait) — masqué si fusionné */
+    if (!removed.has(sec.id))
+      elems.push(
+        <div
+          key={`play-${sec.id}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            playFrom(sec);
+          }}
+          style={{
+            position: "absolute",
+            left: `${leftPct}%`,
+            top: -16,
+            transform: "translateX(-50%)",
+            background: "green",
+            border: "2px solid green",
+            borderRadius: "50%",
+            width: 22,
+            height: 22,
+            color: "#fff",
+            fontSize: 12,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            zIndex: 4,
+            userSelect: "none",
+          }}
+        >
+          ▶
+        </div>
+      );
+  });
 
   return (
     <div
       ref={timelineRef}
       style={{
         position: "relative",
-        left: 0,
-        width: "calc(100vw - 2rem)",
-        height: `${containerHeight}px`,
+        width: "97%",
+        maxWidth: "100vw",
+        height: containerHeight,
         border: "1px solid #ccc",
-        marginBottom: "1rem",
         overflow: "visible",
-        msOverflowStyle: "none",
-        scrollbarWidth: "none",
+        marginBottom: "1rem",
+        userSelect: "none",
       }}
     >
       <canvas
@@ -176,123 +317,22 @@ const AudioTimelineReadOnly: React.FC<AudioTimelineReadOnlyProps> = ({
           width: "100%",
           height: "100%",
           pointerEvents: "none",
-          zIndex: 1,
         }}
       />
-      {/* Affichage du fond cliquable pour chaque section */}
-      {sortedSections.map((section) => {
-        const leftPercent = (section.start / totalTime) * 100;
-        const widthPercent = ((section.end - section.start) / totalTime) * 100;
-        return (
-          <div key={section.id}>
-            <div
-              onClick={() => onPlaySection(section)}
-              style={{
-                position: "absolute",
-                left: `${leftPercent}%`,
-                width: `${widthPercent}%`,
-                height: "100%",
-                cursor: "pointer",
-                backgroundColor: "transparent",
-                zIndex: 2,
-              }}
-            />
-            <div
-              style={{
-                position: "absolute",
-                left: `${leftPercent}%`,
-                top: 0,
-                bottom: 0,
-                width: "2px",
-                backgroundColor: "#800080",
-                opacity: removedMarkers.has(section.id) ? 0.3 : 1,
-                pointerEvents: "none",
-                zIndex: 2,
-              }}
-            />
-            {/* Bouton de suppression / fusion sous chaque trait violet (pour toutes les sections, y compris la 1ère) */}
-            <div
-              style={{
-                position: "absolute",
-                bottom: "-20px",
-                left: `${leftPercent}%`,
-                transform: "translateX(-50%)",
-                backgroundColor: "#fff",
-                border: "1px solid #ccc",
-                borderRadius: "50%",
-                width: "16px",
-                height: "16px",
-                textAlign: "center",
-                lineHeight: "14px",
-                fontSize: "12px",
-                cursor: "pointer",
-                pointerEvents: "auto"
-              }}
-              onClick={(e) => {
-                e.stopPropagation();
-                // Pour le premier marker (index 0), on n'autorise pas la fusion
-                if(section === sortedSections[0]) return;
-                toggleMarker(section.id);
-              }}
-            >
-              {removedMarkers.has(section.id) ? "⟲" : "×"}
-            </div>
-          </div>
-        );
-      })}
-      {/* Affichage d'une seule vignette play par groupe fusionné */}
-      {mergedGroups.map((groupObj, index) => {
-        const { left, right } = groupObj;
-        const centerTime = (left + right) / 2;
-        const centerPercent = (centerTime / totalTime) * 100;
-        // Créez une section virtuelle qui s'étend du début (left) à la fin (right) du groupe fusionné
-        const virtualSection: Section = { id: `merged-${index}`, start: left, end: right };
-        return (
-          <div 
-            key={`group-${index}`}
-            onClick={() => onPlaySection(virtualSection)}
-            style={{
-              position: "absolute",
-              left: `${centerPercent}%`,
-              top: "-22px",
-              transform: "translateX(-50%)",
-              backgroundColor: "green",
-              border: "2px solid green",
-              borderRadius: "50%",
-              width: "14px",
-              height: "14px",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#fff",
-              fontSize: "12px",
-              cursor: "pointer",
-              zIndex: 3,
-            }}
-          >
-            ▶
-          </div>
-        );
-      })}
+      {elems}
       {typeof currentTime === "number" && (
         <div
           style={{
             position: "absolute",
+            left: `${(currentTime / totalTime) * 100}%`,
             top: 0,
             bottom: 0,
-            left: `${(currentTime / totalTime) * 100}%`,
-            width: "1px",
-            backgroundColor: "red",
-            pointerEvents: "none",
-            zIndex: 1000,
+            width: 1,
+            background: "red",
+            zIndex: 1,
           }}
         />
       )}
-      <style jsx>{`
-        ::-webkit-scrollbar {
-          display: none;
-        }
-      `}</style>
     </div>
   );
 };

@@ -12,6 +12,7 @@ import { getCalibrationConfig, CalibrationConfig, savePositionConfig, getPositio
 import { uploadVideo, uploadMidiData, addRecordingToLearner } from "../../services/mediaService";
 import ContentMedia from "../../../components/ContentMedia";
 import { getProxiedUrl } from '../../utils/proxyUrl';
+import VideoTransportBar from "./VideoTransportBar";
 
 // Interface pour un événement MIDI
 interface MidiEvent {
@@ -59,8 +60,6 @@ export default function TrainingPage() {
     secondWindowRef.current?.postMessage(msg, "*");
   }
 
-
-
   const searchParams = useSearchParams();
   const router = useRouter();
   const soundId = searchParams?.get("soundId") ?? null;
@@ -98,6 +97,8 @@ export default function TrainingPage() {
       );
       // Envoi immédiat de la vidéo par défaut dès l’ouverture
       sendToSecond({ type: "SHOW_DEFAULT", url: selectedSound?.videoUrl });
+      sendToSecond({ type: "TOGGLE_PIANO_ROLLS", visible: showPianoRolls });
+      sendToSecond({ type: "TOGGLE_HANDS",       visible: showHands       });
     } else {
       // Si la fenêtre est déjà ouverte, on peut lui renvoyer une mise à jour
       sendToSecond({ type: "SHOW_DEFAULT", url: selectedSound?.videoUrl });
@@ -107,6 +108,13 @@ export default function TrainingPage() {
   // États de contrôle
   const [editable, setEditable] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  // ─── LAYERS toggles ──────────────────────────────────────────────
+  const [showPianoRolls, setShowPianoRolls] = useState(true);
+  const [showHands,      setShowHands]      = useState(true);
+  const [keysEnabled,    setKeysEnabled]    = useState(true);
+  /* garde une copie du "send" d’origine pour pouvoir le remettre */
+  const midiSendOrigRef  = useRef<((data: any)=>void)|null>(null);
+
 
   useEffect(() => {
     sendToSecond({ type: "SET_SPEED", speed: playbackSpeed });
@@ -231,7 +239,18 @@ export default function TrainingPage() {
           output = outputs[0];
           console.warn("Port Disklavier non trouvé, utilisation du port :", output.name);
         }
-        midiOutputRef.current = (output ?? null) as unknown as MIDIOutput;
+        midiOutputRef.current = (output ?? null) as MIDIOutput;
+
+        if (output) {
+          // on a bien une sortie : on mémorise send()
+          if (!midiSendOrigRef.current) {
+            midiSendOrigRef.current = output.send.bind(output);
+          }
+        } else {
+          // aucune sortie disponible
+          midiSendOrigRef.current = null;
+        }
+
       });
     }
   }, []);
@@ -275,90 +294,110 @@ export default function TrainingPage() {
     scheduledTimeouts.current.push(id);
   };
 
-  const playSection = (section: Section) => {
+  const playSection = async (section: Section) => {
     if (!videoRef.current) return;
-    if (videoRef.current.currentTime < section.start || videoRef.current.currentTime >= section.end) {
+
+    /* 1. Toujours placer le curseur au début de la section voulue */
+    if (
+      videoRef.current.currentTime < section.start ||
+      videoRef.current.currentTime >= section.end
+    ) {
       videoRef.current.currentTime = section.start;
     }
+
+    /* 2. Fixer la vitesse AVANT de lancer play() */
     videoRef.current.playbackRate = playbackSpeed;
-    scheduleTimeout(() => {
-      videoRef.current?.play().catch((err) => console.error(err));
-    }, videoDelayMs);
-    const remaining = (section.end - videoRef.current.currentTime) / playbackSpeed;
-    scheduleTimeout(() => {
-      videoRef.current?.pause();
-      if (selectedSound?.sections) {
-        const currentIndex = selectedSound.sections.indexOf(section);
-        if (currentIndex < selectedSound.sections.length - 1) {
-          setCurrentSectionIndex(currentIndex + 1);
-        }
+
+    /* 3. Lance la vidéo APRÈS le delay matériel */
+    scheduleTimeout(async () => {
+      try {
+        await videoRef.current!.play();
+
+        /* 4. Maintenant qu’on sait exactement quand la lecture débute,
+              on programme l’arrêt à la bonne échéance  */
+        const sectionDurationMs =
+          ((section.end - section.start) * 1000) / playbackSpeed;
+
+        scheduleTimeout(() => {
+          videoRef.current?.pause();
+
+          /* Passage à la prochaine section (si elle existe) */
+          if (selectedSound?.sections) {
+            const idx = selectedSound.sections.indexOf(section) + 1;
+            if (idx < selectedSound.sections.length) {
+              setCurrentSectionIndex(idx);
+            }
+          }
+        }, sectionDurationMs);
+      } catch (err) {
+        console.error("Erreur lors du démarrage de la vidéo :", err);
       }
-    }, remaining * 1000);
+    }, videoDelayMs);
   };
 
   // Ajoutez ces états
   const [referenceMidiSequence, setReferenceMidiSequence] = useState<any[]>([]);
   const [performanceNoteColors, setPerformanceNoteColors] = useState<string[]>([]);
 
-  // Modifiez playMidiSection pour stocker la séquence de référence
   const playMidiSection = (section: Section) => {
-    if (!selectedSound || !selectedSound.midiUrl || !midiOutputRef.current) return;
-    
-    // Use the proxy for the MIDI URL
-    const proxiedUrl = getProxiedUrl(selectedSound.midiUrl);
-    
-    fetch(proxiedUrl)
-      .then((res) => res.arrayBuffer())
-      .then((buffer) => {
-        const midi = new Midi(buffer);
-        let allNotes: any[] = [];
-        midi.tracks.forEach((track) => {
-          allNotes = allNotes.concat(track.notes);
-        });
-        // Filtrer les notes de la section
-        const refNotes = allNotes
-          .filter((note) => note.time >= section.start && note.time < section.end)
+    if (!selectedSound?.midiUrl || !midiOutputRef.current) return;
+
+    fetch(getProxiedUrl(selectedSound.midiUrl))
+      .then(res => res.arrayBuffer())
+      .then(buf => {
+        const midi = new Midi(buf);
+
+        /* Notes de la section */
+        const notes = midi.tracks
+          .flatMap(t => t.notes)
+          .filter(n => n.time >= section.start && n.time < section.end)
           .sort((a, b) => a.time - b.time);
-        setReferenceMidiSequence(refNotes);
-        // Envoi des messages MIDI selon la durée de la note
-        refNotes.forEach((note) => {
+
+        setReferenceMidiSequence(notes);
+
+        notes.forEach(note => {
           const offset = ((note.time - section.start) * 1000) / playbackSpeed;
-          scheduleTimeout(() => {
-            if (note.velocity > 0) {
-              midiOutputRef.current?.send([0x90, note.midi, 0x7f]);
-              if (note.duration > 0) {
-                scheduleTimeout(() => {
-                  midiOutputRef.current?.send([0x80, note.midi, 0x40]);
-                }, (note.duration * 1000) / playbackSpeed);
-              } else {
-                midiOutputRef.current?.send([0x80, note.midi, 0x40]);
-              }
-            } else {
-              midiOutputRef.current?.send([0x80, note.midi, 0x40]);
-            }
-          }, offset);
+
+          // note-on
+          scheduleTimeout(
+            () => midiOutputRef.current!.send([0x90, note.midi, 0x7f]),
+            offset + videoDelayMs
+          );
+
+          // note-off
+          scheduleTimeout(
+            () => midiOutputRef.current!.send([0x80, note.midi, 0x40]),
+            offset + (note.duration * 1000) / playbackSpeed + videoDelayMs
+          );
         });
-        if (midi.tracks) {
-          midi.tracks.forEach((track) => {
-            if (track.controlChanges && track.controlChanges[64]) {
-              track.controlChanges[64].forEach((pedal) => {
-                if (pedal.time >= section.start && pedal.time < section.end) {
-                  const offset = ((pedal.time - section.start) * 1000) / playbackSpeed;
-                  scheduleTimeout(() => {
-                    midiOutputRef.current?.send([0xB0, 64, Math.round(pedal.value * 127)]);
-                  }, offset);
-                }
-              });
-            }
-          });
-        }
-        const sectionDurationMs = ((section.end - section.start) * 1000) / playbackSpeed;
+
+        /* Pédale (CC 64) */
+        midi.tracks.forEach(track =>
+          track.controlChanges?.[64]?.forEach(pedal => {
+            if (pedal.time < section.start || pedal.time >= section.end) return;
+            const offset =
+              ((pedal.time - section.start) * 1000) / playbackSpeed + videoDelayMs;
+            scheduleTimeout(
+              () =>
+                midiOutputRef.current!.send([
+                  0xB0,
+                  64,
+                  Math.round(pedal.value * 127),
+                ]),
+              offset
+            );
+          })
+        );
+
+        /* All Notes Off juste après la fin réelle */
+        const fullMs =
+          ((section.end - section.start) * 1000) / playbackSpeed + videoDelayMs;
         scheduleTimeout(() => {
-          midiOutputRef.current?.send([0xB0, 64, 0]);
-          midiOutputRef.current?.send([0xB0, 123, 0]);
-        }, sectionDurationMs + 100);
+          midiOutputRef.current!.send([0xB0, 64, 0]);
+          midiOutputRef.current!.send([0xB0, 123, 0]);
+        }, fullMs + 100);
       })
-      .catch((err) => console.error("Erreur lors du chargement du MIDI pour la section", err));
+      .catch(err => console.error("MIDI section error :", err));
   };
 
   // Fonction de comparaison des séquences, retourne le tableau de couleurs ou null
@@ -471,8 +510,8 @@ const handleListenPreviousButton = () => {
         setIsLoopPlaying(false); // S’assurer que le mode boucle est désactivé
         
         // Afficher la vidéo
-        setShowPerformancePlayback(true);
-        sendToSecond({ type: "SHOW_PERFORMANCE", url: storedVideoURL! });
+        //setShowPerformancePlayback(true);
+        sendToSecond({ type: "SHOW_PERFORMANCE", url: storedVideoURL!, midiEvents: recordingData.midi || [] });
         
         // Planifier la lecture des événements MIDI (une seule fois)
         if (performanceMIDIEventsRef.current.length > 0 && midiOutputRef.current) {
@@ -1113,6 +1152,39 @@ const stopPerformanceRecording = () => {
       }
     }
   };
+
+  /* ---------- toggles handlers ---------- */
+  const togglePianoRolls = () => {
+    const v = !showPianoRolls;
+    setShowPianoRolls(v);
+    sendToSecond({ type: "TOGGLE_PIANO_ROLLS", visible: v });
+  };
+
+  const toggleHands = () => {
+    const v = !showHands;
+    setShowHands(v);
+    sendToSecond({ type: "TOGGLE_HANDS", visible: v });
+  };
+
+  const toggleKeys = () => {
+    const v = !keysEnabled;
+    setKeysEnabled(v);
+
+    if (!midiOutputRef.current) return;
+
+    if (v) {
+      // ré-active l’envoi
+      if (midiSendOrigRef.current)
+        midiOutputRef.current.send = midiSendOrigRef.current;
+    } else {
+      // coupe le MIDI
+      if (midiSendOrigRef.current)
+        midiOutputRef.current.send = () => {};
+      // sécurité : All Notes Off
+      midiOutputRef.current.send([0xB0, 123, 0]);
+    }
+  };
+
 
   // Update the onPointsChange handler to use the new handleCalibrationPointsChange function
   const handleCalibrationPointsChange = (newPoints: Points) => {
@@ -1813,6 +1885,25 @@ const playRecordedMidi = () => {
 };
 // ------------------------------------------------------------------
 
+  // timing
+  const [videoDuration, setVideoDuration] = useState<number>(
+    selectedSound?.sections?.at(-1)?.end ?? 0
+  );
+
+  // ─── gestion des postMessages ← second-screen ───
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      const msg = e.data as any;
+      if (msg?.type === "TIME_UPDATE") {
+        setCurrentTime(msg.time);
+      }
+      if (msg?.type === "DURATION") {
+        setVideoDuration(msg.duration);
+      }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
 
   if (loading) {
     return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh" }}>
@@ -1871,67 +1962,6 @@ const playRecordedMidi = () => {
           {overlayMessage}
         </div>
       )}
-      {showPerformancePlayback && performanceVideoURL && (
-        <Rnd position={recordedVideoContainerPos} onDragStop={(e, d) => setRecordedVideoContainerPos({ x: d.x, y: d.y })}>
-          <div
-            id="recordedVideoContainer"
-            style={{
-              width: absoluteCrop?.width || 640,
-              height: absoluteCrop?.height || 360,
-              position: "relative",
-              overflow: "visible",
-            }}
-          >
-            <div
-              style={{
-                position: "absolute",
-                left: absoluteCrop?.x || 0,
-                top: absoluteCrop?.y || 0,
-                width: absoluteCrop?.width || 640,
-                height: absoluteCrop?.height || 360,
-                overflow: "visible",
-              }}
-            >
-              <PerspectiveTransform
-                points={recordedVideoPerspectivePoints || { 
-                  topLeft: { x: 0, y: 0 }, 
-                  topRight: { x: 640, y: 0 }, 
-                  bottomRight: { x: 640, y: 360 }, 
-                  bottomLeft: { x: 0, y: 360 } 
-                }}
-                editable={false}
-              >
-                {isLocalVideo ? (
-                  <video
-                    ref={performanceVideoRef}
-                    src={performanceVideoURL}
-                    autoPlay={false} // Changer à false pour contrôler manuellement le démarrage
-                    playsInline
-                    style={{
-                      position: "absolute",
-                      left: absoluteVideoOffset ? -absoluteVideoOffset.x : 0,
-                      top: absoluteVideoOffset ? -absoluteVideoOffset.y : 0,
-                      width: "640px",
-                      height: "auto",
-                    }}
-                    onLoadedData={() => {
-                      // S’assurer que le délai VIDEO_DELAY_MS est respecté
-                      setTimeout(() => {
-                        if (performanceVideoRef.current) {
-                          performanceVideoRef.current.play().catch(err => 
-                            console.error("Erreur lors de la lecture de la vidéo locale:", err)
-                          );
-                        }
-                      }, videoDelayMs); // Utiliser la constante VIDEO_DELAY_MS
-                    }}
-                    onEnded={() => setShowPerformancePlayback(false)}
-                  />
-                ) : null}
-              </PerspectiveTransform>
-            </div>
-          </div>
-        </Rnd>
-      )}
       {/* Barre supérieure */}
       <div style={{ position: "relative", marginBottom: "1rem" }}>
         <div style={{ position: "absolute", left: 0, top: 0 }}>
@@ -1945,18 +1975,31 @@ const playRecordedMidi = () => {
       </div>
       {/* Timeline MIDI */}
       {selectedSound?.midiUrl && selectedSound.sections && (
-        <div style={{ marginBottom: "1rem" }}>
-          <AudioTimelineReadOnly
-            midiUrl={selectedSound.midiUrl}
-            totalTime={totalTime}
-            containerHeight={100}
-            sections={selectedSound.sections}
-            onPlaySection={(section) => handlePlaySection(section)}
-            currentTime={currentTime}
-            noteColors={currentEvaluation}
-          />
-        </div>
+        <div>
+          <div style={{ marginLeft: "0px", marginBottom: "2rem" }}>
+            <AudioTimelineReadOnly
+              midiUrl={selectedSound.midiUrl}
+              totalTime={videoDuration}
+              containerHeight={250}
+              sections={selectedSound.sections}
+              onPlaySection={(section) => handlePlaySection(section)}
+              currentTime={currentTime}
+              noteColors={currentEvaluation}
+            />
+          </div>
+          <div style={{ marginLeft: "0px", marginBottom: "0rem" }}>
+            <VideoTransportBar
+              currentTime={currentTime}
+              duration={videoDuration}
+              onPlay={() => sendToSecond({ type: "PLAY" })}
+              onPause={() => sendToSecond({ type: "PAUSE" })}
+              onSeekAbs={(t) => sendToSecond({ type: "SEEK_ABS", time: t })}
+              onSeekRel={(d) => sendToSecond({ type: "SEEK_REL", delta: d })}
+            />
+          </div>
+        </div>        
       )}
+
       {/* Barre de contrôles */}
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "center", gap: "1rem", marginTop: "2rem", marginBottom: "0rem" }}>
       {currentLearnerName === "Polpii" && (
@@ -2050,7 +2093,7 @@ const playRecordedMidi = () => {
                       borderBottom: "1px solid #eee",
                       whiteSpace: "nowrap"
                     }}
-                    onClick={() => { setSelectedRecordedName(rv.name); setDropdownOpen(false); sendToSecond({ type: "SHOW_RECORDED", url: rv.blobUrl }); }}
+                    onClick={() => { setSelectedRecordedName(rv.name); setDropdownOpen(false); sendToSecond({ type: "SHOW_RECORDED", url: rv.blobUrl, midiUrl: rv.midiUrl }); }}
                   >
                     <span onClick={(e) => { e.stopPropagation(); handleDeleteRecording(rv.name); }} style={{ cursor: "pointer", color: "red", marginRight: "4px" }}>x</span>
                     <span>{formatDisplay(rv.name)}</span>
@@ -2066,6 +2109,29 @@ const playRecordedMidi = () => {
             )}
           </div>
         )}
+        {/* ───── Layers toggles ───── */}
+        <div style={{
+          display:"flex",alignItems:"center",gap:"0.6rem",
+          background:"#f1f1f1",padding:"0.25rem 0.6rem",
+          borderRadius:"6px",border:"1px solid #ccc"
+        }}>
+          <span style={{fontSize:"0.7rem",fontWeight:"bold"}}>LAYERS:</span>
+
+          <div style={{display:"flex",alignItems:"center",gap:"0.3rem"}}>
+            <IOSSwitch checked={showPianoRolls} onChange={togglePianoRolls}/>
+            <span style={{fontSize:"0.65rem"}}>Piano&nbsp;Rolls</span>
+          </div>
+
+          <div style={{display:"flex",alignItems:"center",gap:"0.3rem"}}>
+            <IOSSwitch checked={showHands} onChange={toggleHands}/>
+            <span style={{fontSize:"0.65rem"}}>Hands</span>
+          </div>
+
+          <div style={{display:"flex",alignItems:"center",gap:"0.3rem"}}>
+            <IOSSwitch checked={keysEnabled} onChange={toggleKeys}/>
+            <span style={{fontSize:"0.65rem"}}>Keys</span>
+          </div>
+        </div>
         {/* Nouveaux boutons du Looper avec un style distinctif */}
         <div style={{ 
           display: "flex", 
@@ -2279,118 +2345,6 @@ const playRecordedMidi = () => {
           </div>
         </Rnd>
       ) : null}
-      {/* Conteneur pour la vidéo par défaut (vidéo enregistrée depuis la liste déroulante) */}
-      {!videoLoading && (
-        <div
-          id="defaultVideoContainer"
-          style={{
-            margin: "0 auto",
-            width: "100%",
-            maxWidth: "1200px",
-            overflow: "visible",
-            display: "block", // Toujours présent dans le DOM
-            visibility: mainVideoReady ? "visible" : "hidden",
-            position: "relative", 
-            zIndex: 1, // Z-index inférieur pour rester sous les autres vidéos
-            opacity: selectedRecordedName || showPerformancePlayback ? 0 : 1, // Transparent quand d’autres vidéos sont actives
-            transition: "opacity 0.3s ease" // Transition douce
-          }}
-        >
-          <PerspectiveTransform
-            storageKey={`calibration-${soundId}`}
-            editable={editable}
-            toggleKeys={["v"]}
-            enableGroupDrag
-            onPointsChange={(newPoints: Points) => {
-              handleCalibrationPointsChange(newPoints);
-            }}
-          >
-            <ContentMedia
-              ref={videoRef}
-              path={selectedSound?.videoUrl || ""}
-              type="video"
-              playsInline
-              onTimeUpdate={(e: React.SyntheticEvent<HTMLVideoElement>) => setCurrentTime(e.currentTarget.currentTime)}
-              style={{ width: "100%", height: "auto" }}
-            />
-          </PerspectiveTransform>
-        </div>
-      )}
-      {/* Conteneur pour les vidéos enregistrées du profil (sélectionnées dans la liste déroulante) */}
-      {selectedRecordedName && (
-        <Rnd position={recordedVideoContainerPos} onDragStop={(e, d) => setRecordedVideoContainerPos({ x: d.x, y: d.y })}>
-          <div
-            id="recordedVideoContainer"
-            style={{
-              width: absoluteCrop ? absoluteCrop.width : 640,
-              height: absoluteCrop ? absoluteCrop.height : 360,
-              position: "relative",
-              overflow: "visible",
-              zIndex: 2, // Higher z-index to appear on top of the default video
-              visibility: showPerformancePlayback ? "hidden" : "visible" // Hide when performance video is active, but keep in DOM
-            }}
-          >
-            <div
-              style={{
-                position: "absolute",
-                left: absoluteCrop ? absoluteCrop.x : 0,
-                top: absoluteCrop ? absoluteCrop.y : 0,
-                width: absoluteCrop ? absoluteCrop.width : 640,
-                height: absoluteCrop ? absoluteCrop.height : 360,
-                overflow: "visible",
-              }}
-            >
-              <PerspectiveTransform
-                // Utilise les points sauvegardés si existants ou un défaut
-                points={recordedVideoPerspectivePoints || { topLeft: { x: 0, y: 0 }, topRight: { x: 640, y: 0 }, bottomRight: { x: 640, y: 360 }, bottomLeft: { x: 0, y: 360 } }}
-                editable={editable}
-                toggleKeys={["v"]}
-                enableGroupDrag
-                // Met à jour les points lors d’un changement
-                onPointsChange={(newPoints: Points) => setRecordedVideoPerspectivePoints(newPoints)}
-              >
-                {/* ─── Vidéo enregistrée — boucle si "_LOOP" ──────────────────── */}
-                {(() => {
-                  const isLoop = selectedRecordedName.toLowerCase().endsWith("_loop.webm");
-                  return (
-                    <video
-                      ref={recordedVideoRef}
-                      src={selectedRecordedVideo?.blobUrl}
-                      controls
-                      style={{
-                        position: "absolute",
-                        left: absoluteVideoOffset ? -absoluteVideoOffset.x : 0,
-                        top: absoluteVideoOffset ? -absoluteVideoOffset.y : 0,
-                        width: "640px",
-                        height: "auto",
-                      }}
-                      onLoadedData={() => {
-                        setTimeout(() => {
-                          recordedVideoRef.current?.play();
-                          if (isLoop) playRecordedMidi();
-                        }, videoDelayMs);
-                      }}
-                      onEnded={() => {
-                        if (isLoop) {
-                          // remet au début et reboucle
-                          recordedVideoRef.current!.currentTime = 0;
-                          recordedVideoRef.current!.play();
-                          playRecordedMidi();
-                        } else {
-                          // comportement par défaut
-                          setSelectedRecordedName("");
-                        }
-                      }}
-                    />
-                  );
-                })()}
-                {/* ──────────────────────────────────────────────────────────────── */}
-
-              </PerspectiveTransform>
-            </div>
-          </div>
-        </Rnd>
-      )}
       <style jsx>{`
         @keyframes blinkRecord {
           0% { background-color: #dc3545; }

@@ -23,14 +23,23 @@ import {
 } from "../../../services/calibrationService";
 import { getProxiedUrl } from "../../../utils/proxyUrl";
 
+type MidiEvt = { data: number[]; timestamp: number };
+
 /* ───────── messages inter-fenêtres ───────── */
 type MessageData =
-  | { type: "SHOW_DEFAULT"; url: string }
-  | { type: "SHOW_PERFORMANCE"; url: string }
-  | { type: "SHOW_RECORDED"; url: string }
-  | { type: "PLAY_SECTION"; start: number; end: number }
-  | { type: "TOGGLE_EDIT"; editable: boolean }
-  | { type: "SET_SPEED"; speed: number };
+  | { type: "SHOW_DEFAULT";     url: string }
+  | { type: "SHOW_PERFORMANCE"; url: string; midiEvents?: MidiEvt[] }
+  | { type: "SHOW_RECORDED";    url: string; midiUrl?: string }
+  | { type: "PLAY_SECTION";     start: number; end: number }
+  | { type: "TOGGLE_EDIT";      editable: boolean }
+  | { type: "SET_SPEED";        speed: number }
+  | { type: "TOGGLE_PIANO_ROLLS"; visible: boolean }   // 👈 NEW
+  | { type: "TOGGLE_HANDS";      visible: boolean }    // 👈 NEW
+  | { type: "PLAY" }
+  | { type: "PAUSE" }
+  | { type: "SEEK_ABS";         time: number }
+  | { type: "SEEK_REL";         delta: number };
+
 
 /* ======================================================= */
 export default function SecondScreen() {
@@ -50,6 +59,12 @@ export default function SecondScreen() {
   const defaultVideoUrl        = sounds.find(s=>s.id===soundId)?.videoUrl;
   const [videoUrl,setVideoUrl] = useState<string|undefined>(defaultVideoUrl);
   const videoRef               = useRef<HTMLVideoElement>(null);
+  /* ─── MIDI dynamiques (recorded / performance) ─── */
+  const [extMidiEvents, setExtMidiEvents] = useState<NoteEvent[]|null>(null);   // events déjà “digérés”
+  /* visibilité contrôlée depuis Training */
+  const [showNotes , setShowNotes ] = useState(true);   // Piano Rolls
+  const [showVideo , setShowVideo ] = useState(true);   // Hands
+
 
   /* ───── gel / dégel automatique ───── */
   useEffect(() => {
@@ -187,6 +202,34 @@ export default function SecondScreen() {
     localStorage.setItem("notesPerspectivePoints",JSON.stringify(pts));
   };
 
+  /** Convertit un tableau brut [{data,timestamp}] en NoteEvent[] */
+  function jsonEventsToNotes(events: MidiEvt[]): NoteEvent[] {
+    const onMap = new Map<number,{ts:number}>();
+    const notes: NoteEvent[]=[];
+
+    events.forEach(ev=>{
+      const [status,note,vel] = ev.data;
+      const cmd = status & 0xF0;
+      if(cmd===0x90 && vel>0){                // note-on
+        onMap.set(note,{ts:ev.timestamp});
+      }else if((cmd===0x80)||(cmd===0x90&&vel===0)){ // note-off
+        const start = onMap.get(note);
+        if(start){
+          notes.push({
+            midi: note,
+            time: start.ts/1000,              // → s
+            duration: (ev.timestamp-start.ts)/1000
+          });
+          onMap.delete(note);
+        }
+      }
+    });
+
+    notes.sort((a,b)=>a.time-b.time);
+    return notes;
+  }
+
+
   /* ───────── fonction play section (inchangée) ───────── */
   function playAndShowSection(start:number,end:number,midiFile=midi){
     if(!midiFile){ setPendingSection({start,end}); return; }
@@ -211,7 +254,15 @@ export default function SecondScreen() {
     setSectionStartTs(performance.now());
   }
 
-  /* ───────── look-ahead permanent ───────── */
+  /* ─── création des notes à afficher ───────────────────────────── */
+  /* 1) cas extMidiEvents : on affiche tel quel, synchronisé sur t=0 */
+  useEffect(()=>{
+    if(!extMidiEvents) return;          // pas de données externes
+    setSectionEvents(extMidiEvents);
+    setSectionStartTs(performance.now());
+  },[extMidiEvents]);
+
+  /* 2) mode DEFAULT : look-ahead classique sur le .mid de la partition */
   useEffect(()=>{
     if(mode!=="default" || !midi || !videoRef.current) return;
     const id=setInterval(()=>{
@@ -227,7 +278,7 @@ export default function SecondScreen() {
       setSectionEvents(evts);
       setSectionStartTs(performance.now());
     },150);
-    return () => clearInterval(id);
+    return()=>clearInterval(id);
   },[mode,midi,videoRef]);
 
   /* shouldLoop pour recorded */
@@ -238,6 +289,12 @@ export default function SecondScreen() {
     const handler=(e:MessageEvent)=>{
       const msg=e.data as MessageData;
       switch(msg.type){
+        case "TOGGLE_PIANO_ROLLS":
+          setShowNotes(msg.visible);
+          break;
+        case "TOGGLE_HANDS":
+          setShowVideo(msg.visible);
+          break;
         case "SET_SPEED":   setSpeed(msg.speed); break;
         case "TOGGLE_EDIT": setEditable(msg.editable); break;
         case "SHOW_DEFAULT":
@@ -246,11 +303,52 @@ export default function SecondScreen() {
           if(videoRef.current) videoRef.current.currentTime=0;
           break;
         case "SHOW_PERFORMANCE":
-          setMode("performance"); setVideoUrl(msg.url); break;
+          setMode("performance"); setVideoUrl(msg.url); setExtMidiEvents(msg.midiEvents ? jsonEventsToNotes(msg.midiEvents) : null); break;
         case "SHOW_RECORDED":
-          setMode("recorded");    setVideoUrl(msg.url); break;
+          setMode("recorded");
+          setVideoUrl(msg.url);
+          if (msg.midiUrl) {
+            /* .mid ou .json ? */
+            if (msg.midiUrl.toLowerCase().endsWith(".mid") || msg.midiUrl.toLowerCase().endsWith(".midi")) {
+              /* charge un vrai MIDI */
+              fetch(getProxiedUrl(msg.midiUrl))
+                .then(r=>r.arrayBuffer())
+                .then(buf=>{
+                  const m = new Midi(buf);
+                  const all:NoteEvent[]=[];
+                  m.tracks.forEach(t=>t.notes.forEach(n=>all.push({
+                    midi:n.midi,
+                    time:n.time,
+                    duration:n.duration
+                  })));
+                  all.sort((a,b)=>a.time-b.time);
+                  setExtMidiEvents(all);
+                })
+                .catch(console.error);
+            } else {   // JSON brut
+              fetch(getProxiedUrl(msg.midiUrl))
+                .then(r=>r.json())
+                .then((evts:MidiEvt[])=>setExtMidiEvents(jsonEventsToNotes(evts)))
+                .catch(console.error);
+            }
+          } else {
+            setExtMidiEvents(null);
+          }
+          break;
         case "PLAY_SECTION":
           setMode("default"); playAndShowSection(msg.start,msg.end); break;
+        case "PLAY":
+          videoRef.current?.play();
+          break;
+        case "PAUSE":
+          videoRef.current?.pause();
+          break;
+        case "SEEK_ABS":
+          if (videoRef.current) videoRef.current.currentTime = msg.time;
+          break;
+        case "SEEK_REL":
+          if (videoRef.current) videoRef.current.currentTime += msg.delta;
+          break;
       }
     };
     window.addEventListener("message",handler);
@@ -264,11 +362,32 @@ export default function SecondScreen() {
     }
   },[speed, isPlaying, videoUrl, mode]);
 
+  /* ─── envoyer DURATION après loadedmetadata ─── */
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onLoaded = () => {
+      window.opener?.postMessage({ type: "DURATION", duration: v.duration }, "*");
+    };
+    v.addEventListener("loadedmetadata", onLoaded);
+    return () => v.removeEventListener("loadedmetadata", onLoaded);
+  }, [videoUrl]);
+
+  /* ─── envoyer TIME_UPDATE en continu ─── */
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const id = setInterval(() => {
+      window.opener?.postMessage({ type: "TIME_UPDATE", time: v.currentTime }, "*");
+    }, 200);
+    return () => clearInterval(id);
+  }, [videoUrl]);
+
   /* ───────── rendu recorded/perf (inchangé) ───────── */
   const renderRecordedLikeTraining = (
     src:string, autoPlay:boolean, loop:boolean, onEnd:()=>void
   ) => {
-    if(!absCrop||!absOffset) return null;
+    if(!absCrop || !absOffset) return null;
     const pts=recordedPtsAbs||absDefaultPts;
     if(!pts) return null;
 
@@ -276,11 +395,11 @@ export default function SecondScreen() {
       ? <video src={src} autoPlay={autoPlay} loop={loop} playsInline
                onLoadedMetadata={e=>(e.currentTarget.playbackRate=speed)}
                onEnded={onEnd}
-               style={{position:"absolute",left:-absOffset.x,top:-absOffset.y,width:640,height:"auto"}}/>
+               style={{position:"absolute",left:-absOffset.x,top:-absOffset.y,width:640,height:"auto", opacity: showVideo ? 1 : 0, pointerEvents: showVideo ? "auto" : "none"}}/>
       : <ContentMedia path={src} type="video" autoPlay={autoPlay} loop={loop} playsInline
                       onLoadedMetadata={(e:SyntheticEvent<HTMLVideoElement>)=>(e.currentTarget.playbackRate=speed)}
                       onEnded={onEnd}
-                      style={{position:"absolute",left:-absOffset.x,top:-absOffset.y,width:640,height:"auto"}}/>;
+                      style={{position:"absolute",left:-absOffset.x,top:-absOffset.y,width:640,height:"auto", opacity: showVideo ? 1 : 0, pointerEvents: showVideo ? "auto" : "none"}}/>;
 
     return (
       <div style={{width:absCrop.width,height:absCrop.height,position:"relative",overflow:"visible"}}>
@@ -295,7 +414,7 @@ export default function SecondScreen() {
 
   /* ───────── overlay notes ───────── */
   const renderNotes = () => {
-    if(!absCrop||!absOffset||sectionEvents.length===0) return null;
+    if(!showNotes || !absCrop || !absOffset || sectionEvents.length===0) return null;
     const pts=notePtsAbs||absDefaultPts;
     if(!pts) return null;
     return (
@@ -337,7 +456,7 @@ export default function SecondScreen() {
           <video ref={videoRef}
                  src={videoUrl||defaultVideoUrl}
                  playsInline
-                 style={{width:"100%",height:"auto"}}
+                 style={{width:"100%",height:"auto", opacity: showVideo ? 1 : 0, pointerEvents: showVideo ? "auto" : "none"}}
                  onLoadedMetadata={()=>{
                    if(videoRef.current){
                      videoRef.current.currentTime  = 0;
@@ -358,6 +477,7 @@ export default function SecondScreen() {
           ()=>{
             setMode("default");
             setVideoUrl(defaultVideoUrl);
+            setExtMidiEvents(null);
             videoRef.current?.pause();
             if(videoRef.current) videoRef.current.currentTime = 0;
           }
