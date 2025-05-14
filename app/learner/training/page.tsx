@@ -64,7 +64,7 @@ export default function TrainingPage() {
   const router = useRouter();
   const soundId = searchParams?.get("soundId") ?? null;
   // 👇 Hook placé à l’intérieur du composant
-  const [videoDelayMs, setVideoDelayMs] = useState(250);
+  const [videoDelayMs, setVideoDelayMs] = useState(450);
   
   // Ajout des états manquants
   const [loading, setLoading] = useState(false);
@@ -104,6 +104,13 @@ export default function TrainingPage() {
       sendToSecond({ type: "SHOW_DEFAULT", url: selectedSound?.videoUrl });
     }
   }, [soundId, selectedSound?.videoUrl]);
+
+  // Effet pour envoyer le délai vidéo à la fenêtre secondaire
+  useEffect(() => {
+    if (secondWindowRef.current) {
+      sendToSecond({ type: "SET_DELAY", delay: videoDelayMs });
+    }
+  }, [videoDelayMs]);
 
   // États de contrôle
   const [editable, setEditable] = useState(false);
@@ -294,6 +301,45 @@ export default function TrainingPage() {
     scheduledTimeouts.current.push(id);
   };
 
+  const midiTimeouts = useRef<NodeJS.Timeout[]>([]);
+
+  function clearMidiTimeouts() {
+    // on stoppe tous les timeouts MIDI en attente
+    midiTimeouts.current.forEach(clearTimeout);
+    midiTimeouts.current = [];
+
+    // envoi de “All Notes Off”
+    midiOutputRef.current?.send([0xB0, 123, 0]);
+    // et relâchement de la pédale (CC 64)
+    midiOutputRef.current?.send([0xB0, 64, 0]);
+  }
+
+  function startMidiFrom(timeSec: number) {
+    if (!midiFile || !midiOutputRef.current) return;
+    clearMidiTimeouts();
+
+    // Pour chaque piste → chaque note
+    midiFile.tracks.flatMap(t => t.notes).forEach(note => {
+      if (note.time >= timeSec) {
+        const deltaMs = ((note.time - timeSec) * 1000) / playbackSpeed;
+
+        // note-on
+        const idOn = setTimeout(() => {
+          midiOutputRef.current!.send([0x90, note.midi, 0x7f]);
+        }, deltaMs);
+        midiTimeouts.current.push(idOn);
+
+        // note-off
+        const idOff = setTimeout(() => {
+          midiOutputRef.current!.send([0x80, note.midi, 0x40]);
+        }, deltaMs + (note.duration * 1000) / playbackSpeed);
+        midiTimeouts.current.push(idOff);
+      }
+    });
+  }
+
+
+
   const playSection = async (section: Section) => {
     if (!videoRef.current) return;
 
@@ -361,13 +407,13 @@ export default function TrainingPage() {
           // note-on
           scheduleTimeout(
             () => midiOutputRef.current!.send([0x90, note.midi, 0x7f]),
-            offset + videoDelayMs
+            offset
           );
 
           // note-off
           scheduleTimeout(
             () => midiOutputRef.current!.send([0x80, note.midi, 0x40]),
-            offset + (note.duration * 1000) / playbackSpeed + videoDelayMs
+            offset + (note.duration * 1000) / playbackSpeed
           );
         });
 
@@ -376,7 +422,7 @@ export default function TrainingPage() {
           track.controlChanges?.[64]?.forEach(pedal => {
             if (pedal.time < section.start || pedal.time >= section.end) return;
             const offset =
-              ((pedal.time - section.start) * 1000) / playbackSpeed + videoDelayMs;
+              ((pedal.time - section.start) * 1000) / playbackSpeed;
             scheduleTimeout(
               () =>
                 midiOutputRef.current!.send([
@@ -391,7 +437,7 @@ export default function TrainingPage() {
 
         /* All Notes Off juste après la fin réelle */
         const fullMs =
-          ((section.end - section.start) * 1000) / playbackSpeed + videoDelayMs;
+          ((section.end - section.start) * 1000) / playbackSpeed;
         scheduleTimeout(() => {
           midiOutputRef.current!.send([0xB0, 64, 0]);
           midiOutputRef.current!.send([0xB0, 123, 0]);
@@ -399,6 +445,22 @@ export default function TrainingPage() {
       })
       .catch(err => console.error("MIDI section error :", err));
   };
+
+  const [midiFile, setMidiFile] = useState<Midi | null>(null);
+  const [midiDuration, setMidiDuration] = useState<number>(0);
+
+  useEffect(() => {
+    if (!selectedSound?.midiUrl) return;
+    fetch(getProxiedUrl(selectedSound.midiUrl))
+      .then(r => r.arrayBuffer())
+      .then(buf => {
+        const mf = new Midi(buf);
+        setMidiFile(mf);
+        setMidiDuration(mf.duration);
+    })
+      .catch(console.error);
+  }, [selectedSound?.midiUrl]);
+
 
   // Fonction de comparaison des séquences, retourne le tableau de couleurs ou null
   const compareSequences = () => {
@@ -452,18 +514,28 @@ export default function TrainingPage() {
     if (!selectedSound) return;
     
     const sectionIndex = selectedSound.sections.indexOf(section);
-    
     setCurrentSectionIndex(sectionIndex);
-    setOverlayMessage("Pay attention");
+    
+    // MIDI commence immédiatement, mais les éléments visuels sont retardés
     if (videoRef.current) videoRef.current.currentTime = section.start;
+    
+    // Les messages sont maintenant retardés du même délai que la vidéo
+    setTimeout(() => {
+      setOverlayMessage("Pay attention");
+    }, videoDelayMs);
+    
+    // Le piano/MIDI commence immédiatement (comportement désiré)
     playSection(section);
     playMidiSection(section);
+    
     const sectionDurationMs = ((section.end - section.start) * 1000) / playbackSpeed;
     
+    // Ajuster le délai pour "Your turn now" en ajoutant le videoDelayMs
     scheduleTimeout(() => {
       setOverlayMessage("Your turn now");
       startPerformanceRecording(section);
-    }, sectionDurationMs);
+    }, sectionDurationMs + videoDelayMs); // Ajouter videoDelayMs pour que ce soit aligné avec la fin de vidéo
+    
     sendToSecond({
       type: "PLAY_SECTION",
       start: section.start,
@@ -1006,6 +1078,7 @@ const stopPerformanceRecording = () => {
 
   // Transformation du bouton pause en bouton stop
   const handleStop = () => {
+    clearMidiTimeouts() 
     // Annuler tous les timeouts en attente
     scheduledTimeouts.current.forEach((timeout) => clearTimeout(timeout));
     scheduledTimeouts.current = [];
@@ -1169,6 +1242,7 @@ const stopPerformanceRecording = () => {
   const toggleKeys = () => {
     const v = !keysEnabled;
     setKeysEnabled(v);
+    clearMidiTimeouts();
 
     if (!midiOutputRef.current) return;
 
@@ -1889,6 +1963,7 @@ const playRecordedMidi = () => {
   const [videoDuration, setVideoDuration] = useState<number>(
     selectedSound?.sections?.at(-1)?.end ?? 0
   );
+  const [videoIsPlaying, setVideoIsPlaying] = useState(false);
 
   // ─── gestion des postMessages ← second-screen ───
   useEffect(() => {
@@ -1991,11 +2066,34 @@ const playRecordedMidi = () => {
             <VideoTransportBar
               currentTime={currentTime}
               duration={videoDuration}
-              onPlay={() => sendToSecond({ type: "PLAY" })}
-              onPause={() => sendToSecond({ type: "PAUSE" })}
-              onSeekAbs={(t) => sendToSecond({ type: "SEEK_ABS", time: t })}
-              onSeekRel={(d) => sendToSecond({ type: "SEEK_REL", delta: d })}
+
+              onPlay={() => {
+                sendToSecond({ type: "PLAY" });
+                setVideoIsPlaying(true);  
+                startMidiFrom(currentTime);
+              }}
+
+              onPause={() => {
+                sendToSecond({ type: "PAUSE" });
+                setVideoIsPlaying(false);  
+                clearMidiTimeouts();
+              }}
+
+              onSeekAbs={(t) => {
+                sendToSecond({ type: "SEEK_ABS", time: t });
+                clearMidiTimeouts();
+                // si la vidéo est déjà en train de jouer, relance le MIDI
+                if (videoIsPlaying) startMidiFrom(t);
+              }}
+
+              onSeekRel={(d) => {
+                sendToSecond({ type: "SEEK_REL", delta: d });
+                clearMidiTimeouts();
+                const newTime = Math.max(0, currentTime + d);
+                if (videoIsPlaying) startMidiFrom(newTime);
+              }}
             />
+
           </div>
         </div>        
       )}

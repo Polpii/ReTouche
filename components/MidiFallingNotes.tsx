@@ -4,58 +4,71 @@ import React, { useRef, useEffect } from "react";
 
 export interface NoteEvent {
   midi: number;     // 21-108
-  time: number;     // s depuis le début de la section
-  duration: number; // s
+  time: number;     // seconds since section start
+  duration: number; // seconds
 }
 
 interface Props {
   events: NoteEvent[];
-  sectionStart: number; // performance.now() au déclenchement
+  sectionStart: number; // performance.now() at play start
   speed: number;        // playbackRate
-  width: number;        // ← NEW  largeur imposée par absCrop
-  height: number;       // ← NEW  hauteur = distance exacte jusqu’à la ligne du bas
+  width: number;        // canvas width
+  height: number;       // canvas height
 }
 
-/* ------------------------------------------------------------------ */
-const LOOKAHEAD  = 5;                     // secondes affichées
-const NB_KEYS    = 88;
+// Constants
+const LOOKAHEAD = 5;                     // seconds visible
+const NB_KEYS = 88;
 const FIRST_MIDI = 21;
-const WHITE_KEYS = [0,2,4,5,7,9,11];
+const WHITE_KEYS = [0, 2, 4, 5, 7, 9, 11];
 
-export default function MidiFallingNotes({
-  events, sectionStart, speed,
-  width, height,
-}: Props) {
+export default function MidiFallingNotes({ events, sectionStart, speed, width, height }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    const cvs = canvasRef.current!;
-    cvs.width  = width;                   // ← taille dynamique
-    cvs.height = height;
-
-    const ctx  = cvs.getContext("2d")!;
+    const canvas = canvasRef.current!;
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d")!;
     const keyW = width / NB_KEYS;
 
     function draw() {
+      // current playback time in section (s)
       const now = ((performance.now() - sectionStart) / 1000) * speed;
+      // clear canvas
       ctx.clearRect(0, 0, width, height);
 
       events.forEach(ev => {
-        const dt = ev.time - now;
-        if (dt < -0.2 || dt > LOOKAHEAD) return;
+        // head and tail relative times
+        const dtHead = ev.time - now;
+        const dtTail = ev.time + ev.duration - now;
+        // skip if entirely out of visible window
+        if (dtHead > LOOKAHEAD) return;
+        if (dtTail < 0) return;
 
+        // clamp to [0, LOOKAHEAD]
+        const clampedHead = Math.min(Math.max(dtHead, 0), LOOKAHEAD);
+        const clampedTail = Math.min(Math.max(dtTail, 0), LOOKAHEAD);
+
+        // pixel positions
+        const yHead = (1 - clampedHead / LOOKAHEAD) * height;
+        const yTail = (1 - clampedTail / LOOKAHEAD) * height;
+        const rectY = yHead;
+        const rectH = yTail - yHead;
+
+        // color by white/black key
+        ctx.fillStyle = WHITE_KEYS.includes(ev.midi % 12) ? "#ffd54f" : "#000";
+        // x position
         const x = ((ev.midi - FIRST_MIDI) / (NB_KEYS - 1)) * width;
-        const y = (1 - dt / LOOKAHEAD) * height;   // 0 → top, height → ligne du bas
-
-        ctx.fillStyle = WHITE_KEYS.includes(ev.midi % 12) ? "#ffd54f" : "#000000";
-        ctx.fillRect(x, y - 6, keyW, 6);
-        cvs.style.background = "transparent"; // Pas de grille
+        // draw rectangle spanning duration
+        ctx.fillRect(x, rectY, keyW, rectH);
       });
+
       requestAnimationFrame(draw);
     }
+
     draw();
   }, [events, sectionStart, speed, width, height]);
 
-  /* on ne fixe plus width/height ici – ils sont mis à jour au mount */
   return <canvas ref={canvasRef} />;
 }

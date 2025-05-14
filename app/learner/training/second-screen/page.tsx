@@ -31,8 +31,10 @@ type MessageData =
   | { type: "SHOW_PERFORMANCE"; url: string; midiEvents?: MidiEvt[] }
   | { type: "SHOW_RECORDED";    url: string; midiUrl?: string }
   | { type: "PLAY_SECTION";     start: number; end: number }
+  | { type: "PLAY_SECTION"; sections: { start: number; end: number }[] }
   | { type: "TOGGLE_EDIT";      editable: boolean }
   | { type: "SET_SPEED";        speed: number }
+  | { type: "SET_DELAY";        delay: number }    // 👈 NOUVEAU
   | { type: "TOGGLE_PIANO_ROLLS"; visible: boolean }   // 👈 NEW
   | { type: "TOGGLE_HANDS";      visible: boolean }    // 👈 NEW
   | { type: "PLAY" }
@@ -43,8 +45,12 @@ type MessageData =
 
 /* ======================================================= */
 export default function SecondScreen() {
+
+  const [isSectionPlayback, setIsSectionPlayback] = useState(false);
+  const LOOKAHEAD = 5;
   /* état lecture/pause (pour figer les notes) */
   const [isPlaying, setIsPlaying] = useState(false);
+  const [videoDelay, setVideoDelay] = useState(0); // 👈 Délai pour la vidéo (ms)
 
   /* contextes */
   const params          = useSearchParams();
@@ -230,13 +236,14 @@ export default function SecondScreen() {
   }
 
 
-  /* ───────── fonction play section (inchangée) ───────── */
+  /* ───────── fonction play section (modifiée) ───────── */
   function playAndShowSection(start:number,end:number,midiFile=midi){
     if(!midiFile){ setPendingSection({start,end}); return; }
     if(videoRef.current){
       videoRef.current.currentTime = start;
       videoRef.current.playbackRate = speed;
-      videoRef.current.play();
+      // Lecture avec délai
+      playWithDelay(videoRef.current);
       const dur=((end-start)*1000)/speed;
       setTimeout(()=>{
         videoRef.current?.pause();
@@ -263,32 +270,59 @@ export default function SecondScreen() {
   },[extMidiEvents]);
 
   /* 2) mode DEFAULT : look-ahead classique sur le .mid de la partition */
-  useEffect(()=>{
-    if(mode!=="default" || !midi || !videoRef.current) return;
-    const id=setInterval(()=>{
+  useEffect(() => {
+    if (
+      mode !== "default"     || 
+      !midi                  ||
+      !videoRef.current      ||
+      isSectionPlayback      // ← tant que true, on n’update pas
+    ) {
+      return;
+    }
+
+    const id = setInterval(() => {
       const t0   = videoRef.current!.currentTime;
-      const tMax = t0 + 5;
-      const evts:NoteEvent[]=[];
-      midi.tracks.forEach(tr=>tr.notes.forEach(n=>{
-        if(n.time>=t0 && n.time<=tMax){
-          evts.push({midi:n.midi,time:n.time-t0,duration:n.duration});
-        }
-      }));
+      const tMax = t0 + LOOKAHEAD;
+      const evts: NoteEvent[] = [];
+      midi.tracks.forEach(tr =>
+        tr.notes.forEach(n => {
+          if (n.time >= t0 && n.time <= tMax) {
+            evts.push({ midi: n.midi, time: n.time - t0, duration: n.duration });
+          }
+        })
+      );
       evts.sort((a,b)=>a.time-b.time);
       setSectionEvents(evts);
       setSectionStartTs(performance.now());
-    },150);
-    return()=>clearInterval(id);
-  },[mode,midi,videoRef]);
+    }, 150);
+
+    return () => clearInterval(id);
+  }, [mode, midi, speed, isSectionPlayback]);
 
   /* shouldLoop pour recorded */
   const shouldLoop = mode==="recorded" && !!videoUrl?.toLowerCase().endsWith("_loop.webm");
 
-  /* ───────── messages inter-fenêtres (inchangé) ───────── */
+  /* Fonction utilitaire pour jouer la vidéo avec délai */
+  const playWithDelay = (videoElement: HTMLVideoElement) => {
+    // Si le délai est positif, on retarde la vidéo
+    if (videoDelay > 0) {
+      setTimeout(() => {
+        videoElement.play().catch(err => console.error("Erreur lors du play vidéo:", err));
+      }, videoDelay);
+    } else {
+      // Pas de délai, lecture immédiate
+      videoElement.play().catch(err => console.error("Erreur lors du play vidéo:", err));
+    }
+  };
+
+  /* ───────── messages inter-fenêtres (mis à jour) ───────── */
   useEffect(()=>{
     const handler=(e:MessageEvent)=>{
       const msg=e.data as MessageData;
       switch(msg.type){
+        case "SET_DELAY":
+          setVideoDelay(msg.delay);
+          break;
         case "TOGGLE_PIANO_ROLLS":
           setShowNotes(msg.visible);
           break;
@@ -307,53 +341,100 @@ export default function SecondScreen() {
         case "SHOW_RECORDED":
           setMode("recorded");
           setVideoUrl(msg.url);
+
           if (msg.midiUrl) {
-            /* .mid ou .json ? */
-            if (msg.midiUrl.toLowerCase().endsWith(".mid") || msg.midiUrl.toLowerCase().endsWith(".midi")) {
-              /* charge un vrai MIDI */
-              fetch(getProxiedUrl(msg.midiUrl))
-                .then(r=>r.arrayBuffer())
-                .then(buf=>{
-                  const m = new Midi(buf);
-                  const all:NoteEvent[]=[];
-                  m.tracks.forEach(t=>t.notes.forEach(n=>all.push({
-                    midi:n.midi,
-                    time:n.time,
-                    duration:n.duration
-                  })));
-                  all.sort((a,b)=>a.time-b.time);
-                  setExtMidiEvents(all);
-                })
-                .catch(console.error);
-            } else {   // JSON brut
-              fetch(getProxiedUrl(msg.midiUrl))
-                .then(r=>r.json())
-                .then((evts:MidiEvt[])=>setExtMidiEvents(jsonEventsToNotes(evts)))
-                .catch(console.error);
-            }
+            // charge les events MIDI d’abord
+            fetch(getProxiedUrl(msg.midiUrl))
+              .then(r => r.json())
+              .then((evts: MidiEvt[]) => {
+                const notes = jsonEventsToNotes(evts);
+                setExtMidiEvents(notes);
+
+                // **une fois le MIDI prêt**, on remet la vidéo à 0 et on la lance **
+                if (videoRef.current) {
+                  videoRef.current.currentTime = 0;
+                  playWithDelay(videoRef.current);
+                }
+              })
+              .catch(console.error);
           } else {
             setExtMidiEvents(null);
           }
           break;
-        case "PLAY_SECTION":
-          setMode("default"); playAndShowSection(msg.start,msg.end); break;
+
+        case "PLAY_SECTION": {
+          setMode("default");
+          setIsSectionPlayback(true);
+          
+          // 2️⃣ Récupère la liste des intervalles
+          const intervals = "sections" in msg
+            ? msg.sections
+            : [{ start: msg.start, end: msg.end }];
+          
+          // 3️⃣ Joue la vidéo de la première à la dernière seconde
+          const first = intervals[0].start;
+          const last  = intervals[intervals.length - 1].end;
+          if (videoRef.current) {
+            videoRef.current.currentTime = first;
+            videoRef.current.playbackRate = speed;
+            playWithDelay(videoRef.current);
+            setTimeout(() => {
+              videoRef.current?.pause();
+              if (videoRef.current) videoRef.current.currentTime = first;
+              setIsSectionPlayback(false);
+            }, ((last - first) * 1000) / speed);
+          }
+
+          // 4️⃣ Construit la liste fusionnée des NoteEvent
+          const merged: NoteEvent[] = [];
+          midi?.tracks.forEach(track =>
+            track.notes.forEach(n =>
+              intervals.forEach(({ start, end }) => {
+                if (n.time >= start && n.time < end) {
+                  merged.push({
+                    midi: n.midi,
+                    time: n.time - first,
+                    duration: n.duration
+                  });
+                }
+              })
+            )
+          );
+          merged.sort((a, b) => a.time - b.time);
+
+          // 5️⃣ Affiche-les toutes d’un coup
+          setSectionEvents(merged);
+          setSectionStartTs(performance.now());
+          break;
+        }
         case "PLAY":
-          videoRef.current?.play();
+          if (videoRef.current) playWithDelay(videoRef.current);
           break;
         case "PAUSE":
           videoRef.current?.pause();
           break;
         case "SEEK_ABS":
-          if (videoRef.current) videoRef.current.currentTime = msg.time;
+          if (videoRef.current) {
+            // msg.time est en secondes, videoDelay en ms, on convertit en s
+            const target = Math.max(0, msg.time - videoDelay / 1000);
+            videoRef.current.currentTime = target;
+          }
           break;
         case "SEEK_REL":
-          if (videoRef.current) videoRef.current.currentTime += msg.delta;
+          if (videoRef.current) {
+            // on ajuste aussi la position relative
+            const target =
+              videoRef.current.currentTime +
+              msg.delta -
+              videoDelay / 1000;
+            videoRef.current.currentTime = Math.max(0, target);
+          }
           break;
       }
     };
     window.addEventListener("message",handler);
     return()=>window.removeEventListener("message",handler);
-  },[speed,midi]);
+  },[speed,midi,videoDelay]); // Ajout de videoDelay dans les dépendances
 
   /* remet la vitesse seulement pendant la lecture */
   useEffect(()=>{

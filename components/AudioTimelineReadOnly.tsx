@@ -104,14 +104,13 @@ const AudioTimelineReadOnly: React.FC<Props> = ({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const resize = () => {
-      canvas.width = timelineRef.current!.getBoundingClientRect().width;
+    const draw = async () => {
+      // ajuste la taille du canvas à celle du conteneur
+      const width = timelineRef.current!.getBoundingClientRect().width;
+      canvas.width = width;
       canvas.height = containerHeight;
-    };
-    resize();
-    window.addEventListener("resize", resize);
 
-    (async () => {
+      // grille de fond
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = "#fff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -123,18 +122,13 @@ const AudioTimelineReadOnly: React.FC<Props> = ({
         ctx.stroke();
       }
 
+      // chargement du MIDI et tracé des notes
       try {
-        const buf = await fetch(getProxiedUrl(midiUrl)).then((r) =>
-          r.arrayBuffer()
-        );
+        const buf = await fetch(getProxiedUrl(midiUrl)).then(r => r.arrayBuffer());
         const midi = new Midi(buf);
-        let notes: any[] = [];
-        midi.tracks.forEach((t) => (notes = notes.concat(t.notes)));
-        notes.sort((a, b) => a.time - b.time);
+        const notes = midi.tracks.flatMap(t => t.notes).sort((a, b) => a.time - b.time);
 
-        const min = 21,
-          max = 108,
-          rng = max - min;
+        const min = 21, max = 108, rng = max - min;
         notes.forEach((n, i) => {
           const x = (n.time / totalTime) * canvas.width;
           const w = (n.duration / totalTime) * canvas.width;
@@ -145,9 +139,11 @@ const AudioTimelineReadOnly: React.FC<Props> = ({
       } catch (err) {
         console.error("MIDI load error:", err);
       }
-    })();
+    };
 
-    return () => window.removeEventListener("resize", resize);
+    draw();
+    window.addEventListener("resize", draw);
+    return () => window.removeEventListener("resize", draw);
   }, [midiUrl, totalTime, containerHeight, noteColors]);
 
   /* ────────── lecture fusionnée ────────── */

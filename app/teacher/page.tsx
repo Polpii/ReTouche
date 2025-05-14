@@ -33,7 +33,9 @@ export default function TeacherListPage() {
         padding: "2rem",
         fontFamily: "Arial, sans-serif",
         maxWidth: "800px",
-        margin: "0 auto"
+        margin: "0 auto",
+        height: "100vh",
+        overflowY: "auto",
       }}
     >
       <Link href="/">
