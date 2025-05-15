@@ -57,11 +57,18 @@ export default function MidiFallingNotes({ events, sectionStart, speed, width, h
         const rectH = yTail - yHead;
 
         // color by white/black key
-        ctx.fillStyle = WHITE_KEYS.includes(ev.midi % 12) ? "#ffd54f" : "#000";
+        ctx.fillStyle = WHITE_KEYS.includes(ev.midi % 12) ? "#70e0a7" : "#008020";
         // x position
         const x = ((ev.midi - FIRST_MIDI) / (NB_KEYS - 1)) * width;
         // draw rectangle spanning duration
+        // remplissage
         ctx.fillRect(x, rectY, keyW, rectH);
+
+        // contour noir
+        ctx.lineWidth   = 0.5;       // épaisseur du cadre (ajustez si besoin)
+        ctx.strokeStyle = "#000";  // couleur noire
+        ctx.strokeRect(x, rectY, keyW, rectH);
+
       });
 
       requestAnimationFrame(draw);

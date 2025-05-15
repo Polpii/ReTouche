@@ -260,7 +260,7 @@ export default function SecondScreen() {
       videoRef.current.playbackRate = speed;
       // Lecture avec délai
       playWithDelay(videoRef.current);
-      const dur=((end-start)*1000)/speed + videoDelay;
+      const dur=((end-start)*1000)/speed;
       setTimeout(()=>{
         videoRef.current?.pause();
         if(videoRef.current) videoRef.current.currentTime=start;
@@ -274,7 +274,7 @@ export default function SecondScreen() {
     }));
     evts.sort((a,b)=>a.time-b.time);
     setSectionEvents(evts);
-    setSectionStartTs(performance.now() + videoDelay);
+    setSectionStartTs(performance.now());
   }
 
   /* ─── création des notes à afficher ───────────────────────────── */
@@ -287,7 +287,12 @@ export default function SecondScreen() {
 
   /* 2) mode DEFAULT : look-ahead classique sur le .mid de la partition */
   useEffect(() => {
-    if (mode !== "default" || !midi || !videoRef.current || isSectionPlayback) {
+    if (
+      mode !== "default"     || 
+      !midi                  ||
+      !videoRef.current      ||
+      isSectionPlayback      // ← tant que true, on n’update pas
+    ) {
       return;
     }
 
@@ -295,30 +300,20 @@ export default function SecondScreen() {
       const t0   = videoRef.current!.currentTime;
       const tMax = t0 + LOOKAHEAD;
       const evts: NoteEvent[] = [];
-
-      midi.tracks.forEach(track => {
-        track.notes.forEach(note => {
-          const start = note.time;
-          const end   = note.time + note.duration;
-          // on garde tant que la note n'est pas entièrement terminée
-          if (start <= tMax && end >= t0) {
-            evts.push({
-              midi:     note.midi,
-              time:     note.time - t0,    // peut être négatif → partie déjà passée
-              duration: note.duration
-            });
+      midi.tracks.forEach(tr =>
+        tr.notes.forEach(n => {
+          if (n.time >= t0 && n.time <= tMax) {
+            evts.push({ midi: n.midi, time: n.time - t0, duration: n.duration });
           }
-        });
-      });
-
-      evts.sort((a, b) => a.time - b.time);
+        })
+      );
+      evts.sort((a,b)=>a.time-b.time);
       setSectionEvents(evts);
       setSectionStartTs(performance.now());
     }, 150);
 
     return () => clearInterval(id);
   }, [mode, midi, speed, isSectionPlayback]);
-
 
   /* shouldLoop pour recorded */
   const shouldLoop = mode==="recorded" && !!videoUrl?.toLowerCase().endsWith("_loop.webm");
@@ -403,7 +398,7 @@ export default function SecondScreen() {
               videoRef.current?.pause();
               if (videoRef.current) videoRef.current.currentTime = first;
               setIsSectionPlayback(false);
-            }, ((last - first) * 1000) / speed + videoDelay);
+            }, ((last - first) * 1000) / speed);
           }
 
           // 4️⃣ Construit la liste fusionnée des NoteEvent
@@ -425,7 +420,7 @@ export default function SecondScreen() {
 
           // 5️⃣ Affiche-les toutes d’un coup
           setSectionEvents(merged);
-          setSectionStartTs(performance.now() + videoDelay);
+          setSectionStartTs(performance.now());
           break;
         }
         case "PLAY":
