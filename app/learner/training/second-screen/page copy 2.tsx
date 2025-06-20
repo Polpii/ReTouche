@@ -1,9 +1,8 @@
 /* app/learner/training/second-screen/page.tsx */
 "use client";
-export const dynamic = "force-dynamic";
+
 import React, {
   useEffect,
-  Suspense,
   useState,
   useRef,
   CSSProperties,
@@ -45,7 +44,7 @@ type MessageData =
 
 
 /* ======================================================= */
-function SecondScreenInner() {
+export default function SecondScreen() {
 
   const [isSectionPlayback, setIsSectionPlayback] = useState(false);
   const LOOKAHEAD = 5;
@@ -594,34 +593,58 @@ function SecondScreenInner() {
   /* ───────────────────────── RENDU ───────────────────────── */
   return(
     <div style={wrap}>
-        {mode === "default" && absDefaultPts && (
-        <PerspectiveTransform
-          /* on remplace le stockage local par notre state Firestore */
-          points={recordedPtsAbs || absDefaultPts}
-          editable={editable}
-          enableGroupDrag
-          onPointsChange={saveRecPts}      /* ← envoie directement dans Firestore */
-        >
-          <video
-            ref={videoRef}
-            src={videoUrl || defaultVideoUrl}
-            playsInline
-            style={{
-              width: "100%",
-              height: "auto",
-              opacity: showVideo ? 1 : 0,
-              pointerEvents: showVideo ? "auto" : "none",
-            }}
-            onLoadedMetadata={() => {
-              if (videoRef.current) {
-                videoRef.current.currentTime = 0;
-                videoRef.current.playbackRate = 0;
-                videoRef.current.pause();
-              }
-            }}
+/*
+      {/* partition (default) */}
+      {mode==="default" && (
+        <PerspectiveTransform storageKey={defaultStorageKey} editable={editable} enableGroupDrag>
+          <video ref={videoRef}
+                 src={videoUrl||defaultVideoUrl}
+                 playsInline
+                 style={{width:"100%",height:"auto", opacity: showVideo ? 1 : 0, pointerEvents: showVideo ? "auto" : "none"}}
+                 onLoadedMetadata={()=>{
+                   if(videoRef.current){
+                     videoRef.current.currentTime  = 0;
+                     videoRef.current.playbackRate = 0;  // figé au chargement
+                     videoRef.current.pause();
+                   }
+                 }}
           />
         </PerspectiveTransform>
       )}
+
+
+      {mode === "default" && absDefaultPts && (
+       <PerspectiveTransform
+         /* on remplace le stockage local par notre state Firestore */
+         points={recordedPtsAbs || absDefaultPts}
+         editable={editable}
+         enableGroupDrag
+         onPointsChange={saveRecPts}      /* ← envoie directement dans Firestore */
+       >
+         <video
+           ref={videoRef}
+           src={videoUrl || defaultVideoUrl}
+           playsInline
+           style={{
+             width: "100%",
+             height: "auto",
+             opacity: showVideo ? 1 : 0,
+             pointerEvents: showVideo ? "auto" : "none",
+           }}
+           onLoadedMetadata={() => {
+             if (videoRef.current) {
+               videoRef.current.currentTime = 0;
+               videoRef.current.playbackRate = 0;
+               videoRef.current.pause();
+             }
+           }}
+         />
+       </PerspectiveTransform>
+     )}
+
+
+
+
       {/* recorded / performance */}
       {mode!=="default" &&
         renderRecordedLikeTraining(
@@ -641,13 +664,5 @@ function SecondScreenInner() {
       {/* overlay notes */}
       {renderNotes()}
     </div>
-  );
-}
-
-export default function SecondScreen() {
-  return (
-    <Suspense fallback={<p>Chargement…</p>}>
-      <SecondScreenInner />
-    </Suspense>
   );
 }

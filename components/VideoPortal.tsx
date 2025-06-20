@@ -116,15 +116,16 @@ export default function VideoPortal({ width = 800, height = 600, children }: Vid
       {React.Children.map(children, child => {
         // Si c'est une vidéo, on ajoute des styles pour s'assurer qu'elle s'affiche en entier
         if (React.isValidElement(child) && (child.type === 'video' || (typeof child.type === 'string' && child.type.toLowerCase() === 'video'))) {
-          return React.cloneElement(child, {
+          const el = child as React.ReactElement<any>;
+          return React.cloneElement(el, {
             style: {
-              ...child.props.style,
+              ...(el.props.style as React.CSSProperties),
               maxWidth: '100%',
               maxHeight: '100%',
               objectFit: 'contain', // Assure que la vidéo est visible en entier
               width: 'auto',
-              height: 'auto'
-            }
+              height: 'auto',
+            },
           });
         }
         return child;

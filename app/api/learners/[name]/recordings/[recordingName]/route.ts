@@ -1,21 +1,33 @@
-import { NextResponse } from 'next/server';
+// app/api/learners/[name]/recordings/[recordingName]/route.ts
+
+import { NextResponse, NextRequest } from 'next/server';
 import { deleteRecordingFromLearner } from '../../../../../services/mediaService';
 
 export async function DELETE(
-  request: Request,
-  { params }: { params: { name: string; recordingName: string } }
+  request: NextRequest,
+  context: { params: Promise<{ name: string; recordingName: string }> }
 ) {
+  // ⚠️ ici on await la Promise
+  const { name, recordingName } = await context.params;
+
   try {
-    const { name, recordingName } = params;
-    
     if (!name || !recordingName) {
-      return NextResponse.json({ error: 'Missing parameters' }, { status: 400 });
+      return NextResponse.json(
+        { error: 'Missing parameters' },
+        { status: 400 }
+      );
     }
-    
+
     await deleteRecordingFromLearner(name, recordingName);
-    return NextResponse.json({ message: 'Recording deleted' });
+
+    return NextResponse.json(
+      { message: 'Recording deleted' }
+    );
   } catch (error) {
     console.error('Error deleting recording:', error);
-    return NextResponse.json({ error: 'Error deleting recording' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Error deleting recording' },
+      { status: 500 }
+    );
   }
 }

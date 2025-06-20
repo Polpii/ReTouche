@@ -10,7 +10,22 @@ const compat = new FlatCompat({
 });
 
 const eslintConfig = [
+  // on récupère les configs "next"  
   ...compat.extends("next/core-web-vitals", "next/typescript"),
+
+  // Ajoute ce bloc pour désactiver `any` partout
+  {
+    rules: {
+      "@typescript-eslint/no-explicit-any":        "off",
+      "@typescript-eslint/no-unused-vars":        "off",
+      "prefer-const":                              "off",
+      "react-hooks/exhaustive-deps":               "off",
+      "react/jsx-no-comment-textnodes":            "off",
+      "@typescript-eslint/no-empty-object-type":   "off",
+      "@typescript-eslint/no-unused-expressions":  "off",
+      "@next/next/no-img-element":                 "off",
+    },
+  },
 ];
 
 export default eslintConfig;

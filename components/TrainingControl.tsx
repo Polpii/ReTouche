@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Midi } from "@tonejs/midi";
 import { evaluatePerformance, NoteEvent } from "./PerformanceEvaluator";
 import { Section } from "@/components/types";
+import type { WebMidi } from "webmidi";
 
 
 interface Sound {
@@ -31,7 +32,7 @@ const TrainingControl: React.FC<TrainingControlProps> = ({
   const [isPaused, setIsPaused] = useState(false);
   const [performanceScore, setPerformanceScore] = useState<number | null>(null);
   const [learnerNotes, setLearnerNotes] = useState<NoteEvent[]>([]);
-  const midiOutputRef = useRef<MIDIOutput | null>(null);
+  const midiOutputRef = useRef<WebMidi.MIDIOutput | null>(null)
   const midiDataRef = useRef<Midi | null>(null);
   const timeoutsRef = useRef<NodeJS.Timeout[]>([]);
   const startTimestampRef = useRef<number>(0);

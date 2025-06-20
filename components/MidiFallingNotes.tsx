@@ -35,9 +35,13 @@ export default function MidiFallingNotes({ events, sectionStart, speed, width, h
     function draw() {
       // current playback time in section (s)
       const now = ((performance.now() - sectionStart) / 1000) * speed;
+
       // clear canvas
       ctx.clearRect(0, 0, width, height);
-
+      // set background to black
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, width, height);
+      
       events.forEach(ev => {
         // head and tail relative times
         const dtHead = ev.time - now;
@@ -57,7 +61,7 @@ export default function MidiFallingNotes({ events, sectionStart, speed, width, h
         const rectH = yTail - yHead;
 
         // color by white/black key
-        ctx.fillStyle = WHITE_KEYS.includes(ev.midi % 12) ? "#70e0a7" : "#008020";
+        ctx.fillStyle = WHITE_KEYS.includes(ev.midi % 12) ? "#66BB6A" : "#1B5E20";
         // x position
         const x = ((ev.midi - FIRST_MIDI) / (NB_KEYS - 1)) * width;
         // draw rectangle spanning duration
@@ -65,8 +69,8 @@ export default function MidiFallingNotes({ events, sectionStart, speed, width, h
         ctx.fillRect(x, rectY, keyW, rectH);
 
         // contour noir
-        ctx.lineWidth   = 0.5;       // épaisseur du cadre (ajustez si besoin)
-        ctx.strokeStyle = "#000";  // couleur noire
+        ctx.lineWidth   = 0.75;       // épaisseur du cadre (ajustez si besoin)
+        ctx.strokeStyle = "#fff";  // couleur du contour
         ctx.strokeRect(x, rectY, keyW, rectH);
 
       });

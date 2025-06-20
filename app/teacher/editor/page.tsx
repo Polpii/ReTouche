@@ -1,10 +1,12 @@
 "use client";
-import { useState, useEffect } from 'react';
+export const dynamic = "force-dynamic";
+
+import { Suspense, useState, useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useSoundContext, Sound, Annotation } from '../../context/SoundContext';
 import Link from 'next/link';
 
-export default function EditorPage() {
+function EditorPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const soundId = searchParams.get("soundId");
@@ -120,5 +122,13 @@ export default function EditorPage() {
         </Link>
       </div>
     </div>
+  );
+}
+
+export default function EditorPage() {
+  return (
+    <Suspense fallback={<p>Chargement…</p>}>
+      <EditorPageInner />
+    </Suspense>
   );
 }

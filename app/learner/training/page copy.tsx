@@ -1,7 +1,6 @@
 "use client";
 export const dynamic = "force-dynamic";
-
-import React, { Suspense, useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useSoundContext } from "../../context/SoundContext";
@@ -52,7 +51,7 @@ interface ContainerPos {
   y: number;
 }
 
-function TrainingInner() {
+export default function TrainingPage() {
 
   const secondWindowRef = useRef<Window | null>(null);
   // ─── Ouvre la page SecondScreen dans une nouvelle fenêtre ───
@@ -2378,13 +2377,5 @@ const playRecordedMidi = () => {
         datalist#tickmarks option { font-size: 2rem !important; }
       `}</style>
     </div>
-  );
-}
-
-export default function TrainingPage() {
-  return (
-    <Suspense fallback={<p>Chargement…</p>}>
-      <TrainingInner />
-    </Suspense>
   );
 }
