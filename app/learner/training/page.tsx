@@ -2477,6 +2477,19 @@ const playRecordedMidi = () => {
         }
         datalist#tickmarks option { font-size: 2rem !important; }
       `}</style>
+      <style jsx global>{`
+        /* double la taille de tous les boutons */
+        button{
+          font-size:2em;
+          padding:1rem 2rem;
+        }
+
+        /* double la taille des poignées de lecture de la timeline */
+        .play-handle{
+          transform:scale(1.5);         /* ×2 sans toucher le code du composant */
+          transform-origin:center 0;  /* pivot en haut */
+        }
+      `}</style>
     </div>
   );
 }
