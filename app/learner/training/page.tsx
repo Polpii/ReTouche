@@ -121,6 +121,7 @@ function TrainingInner() {
   const [showPianoRolls, setShowPianoRolls] = useState(true);
   const [showHands,      setShowHands]      = useState(true);
   const [keysEnabled,    setKeysEnabled]    = useState(true);
+  const [showLooper,     setShowLooper]     = useState(true);
   /* garde une copie du "send" d’origine pour pouvoir le remettre */
   const midiSendOrigRef  = useRef<((data: any)=>void)|null>(null);
 
@@ -2101,7 +2102,7 @@ const playRecordedMidi = () => {
       )}
 
       {/* Barre de contrôles */}
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "center", gap: "1rem", marginTop: "2rem", marginBottom: "0rem" }}>
+      <div id="controlBar" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "center", gap: "1rem", marginTop: "2rem", marginBottom: "0rem" }}>
       {currentLearnerName === "Polpii" && (
         <>
           <button
@@ -2209,6 +2210,91 @@ const playRecordedMidi = () => {
             )}
           </div>
         )}
+        {showLooper && (
+          <>
+          {/* Nouveaux boutons du Looper avec un style distinctif */}
+          <span style={{ flexBasis:"100%", height:0 }} />
+          <div style={{
+            display:"flex",
+            alignItems:"center",
+            gap:"0.2rem",
+            background:"#e0f7fa",
+            padding:"0.2rem 0.4rem",
+            borderRadius:"6px",
+            border:"1px solid #4dd0e1",
+            /* PLUS de flexBasis ni width ici */
+            marginTop:"0.5rem"
+          }}>
+            <span style={{ fontSize: "0.7rem", fontWeight: "bold", color: "#00838f" }}>LOOPER:</span>
+            <button 
+              onClick={handleLoopRecording} 
+              style={{ 
+                backgroundColor: isLooping ? "#ff5722" : "#009688", 
+                color: "#fff", 
+                padding: "0.2rem 0.5rem", 
+                borderRadius: "4px", 
+                border: "none", 
+                cursor: "pointer", 
+                fontSize: "0.8rem",
+                animation: isLooping ? "blinkRecord 0.7s infinite" : "none"
+              }}
+            >
+              {isLooping ? "⏹ STOP" : "🔴 REC"}
+            </button>
+            <button 
+              onClick={handleLoopPlayback}
+              disabled={loopLayers.length === 0} 
+              style={{ 
+                backgroundColor: isLoopPlaying ? "#ff9800" : "#4caf50", 
+                color: "#fff", 
+                padding: "0.2rem 0.5rem", 
+                borderRadius: "4px", 
+                border: "none", 
+                cursor: loopLayers.length > 0 ? "pointer" : "not-allowed", 
+                fontSize: "0.8rem",
+                opacity: loopLayers.length > 0 ? 1 : 0.5,
+              }}
+            >
+              {isLoopPlaying ? "⏸ PAUSE" : "▶ PLAY"}
+            </button>
+            <button 
+              onClick={handleRemoveLastLayer}
+              disabled={loopLayers.length === 0} 
+              style={{ 
+                backgroundColor: "#f44336", 
+                color: "#fff", 
+                padding: "0.2rem 0.5rem", 
+                borderRadius: "4px", 
+                border: "none", 
+                cursor: loopLayers.length > 0 ? "pointer" : "not-allowed", 
+                fontSize: "0.8rem",
+                opacity: loopLayers.length > 0 ? 1 : 0.5,
+              }}
+            >
+              🗑 LAYER
+            </button>
+            <button 
+              onClick={handleSaveLoop}
+              disabled={loopLayers.length === 0} 
+              style={{ 
+                backgroundColor: "#3f51b5", 
+                color: "#fff", 
+                padding: "0.2rem 0.5rem", 
+                borderRadius: "4px", 
+                border: "none", 
+                cursor: loopLayers.length > 0 ? "pointer" : "not-allowed", 
+                fontSize: "0.8rem",
+                opacity: loopLayers.length > 0 ? 1 : 0.5,
+              }}
+            >
+              💾 SAVE
+            </button>
+          </div>
+          </>
+        )}
+
+        <span style={{ flexBasis:"100%", height:0 }} />
+
         {/* ───── Layers toggles ───── */}
         <div style={{
           display:"flex",alignItems:"center",gap:"0.6rem",
@@ -2230,6 +2316,16 @@ const playRecordedMidi = () => {
           <div style={{display:"flex",alignItems:"center",gap:"0.3rem"}}>
             <IOSSwitch checked={keysEnabled} onChange={toggleKeys}/>
             <span style={{fontSize:"0.65rem"}}>Keys</span>
+          </div>
+
+
+          {/* ⬇️  NOUVEAU   */}
+          <div style={{display:"flex",alignItems:"center",gap:"0.3rem"}}>
+            <IOSSwitch
+              checked={showLooper}
+              onChange={() => setShowLooper(prev => !prev)}
+            />
+            <span style={{fontSize:"0.65rem"}}>Looper</span>
           </div>
         </div>
       </div>
@@ -2371,7 +2467,11 @@ const playRecordedMidi = () => {
         </Rnd>
       ) : null}
       <style jsx>{`
-        @keyframes blinkRecord {
+      #controlBar{
+        transform: scale(1.5);       /* ×2 : texte, icônes, padding… */
+        transform-origin: top;     /* pivote depuis le haut pour ne pas décaler vers le bas */
+      }
+            @keyframes blinkRecord {
           0% { background-color: #dc3545; }
           100% { background-color: rgb(167, 24, 38); }
         }
