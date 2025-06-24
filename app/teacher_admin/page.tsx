@@ -57,7 +57,7 @@ export default function TeacherListPage() {
       <h4 style={{ fontSize: "1rem", marginBottom: "0.5rem" }}>Add a song</h4>
       <div style={{ marginBottom: "2rem" }}>
         <label style={{ fontSize: "0.9rem" }}>
-          Song title:{" "}
+          Song Title:{" "}
           <input
             type="text"
             value={title}
