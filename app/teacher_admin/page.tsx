@@ -67,7 +67,7 @@ export default function TeacherListPage() {
           />
         </label>
         <p style={{ fontSize: "0.8rem" }}>
-          Make sure the files <code>{title}.mp4</code>, <code>{title}.mid</code> et <code>{title}.mp3</code> are in the database.
+          Make sure the files <code>`${title}.mp4`</code>, <code>`${title}.mid`</code> et <code>`${title}.mp3`</code> are in the database.
         </p>
         <button
           onClick={handleCreateSound}
