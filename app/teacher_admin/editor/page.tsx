@@ -24,7 +24,7 @@ function EditorPageInner() {
       if (!sound) {
         setErrorMessage(`Sound with ID ${soundId} not found`);
         // Redirect to a safe page after a delay
-        setTimeout(() => router.push("/teacher/sounds"), 3000);
+        setTimeout(() => router.push("/teacher_admin/sounds"), 3000);
       } else {
         // Initialize annotations from the sound data, or empty array if none exist
         setAnnotations(sound.annotations || []);
@@ -78,7 +78,7 @@ function EditorPageInner() {
           {errorMessage || "Sound not found"}
         </p>
         <div className="mt-4">
-          <Link href="/teacher/sounds" className="px-4 py-2 bg-blue-500 text-white rounded">
+          <Link href="/teacher_admin/sounds" className="px-4 py-2 bg-blue-500 text-white rounded">
             Back to Sounds
           </Link>
         </div>
@@ -117,7 +117,7 @@ function EditorPageInner() {
       </div>
       
       <div className="mb-4">
-        <Link href="/teacher/sounds" className="text-blue-500 hover:underline">
+        <Link href="/teacher_admin/sounds" className="text-blue-500 hover:underline">
           Back to Sounds
         </Link>
       </div>

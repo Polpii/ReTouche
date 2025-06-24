@@ -16,20 +16,6 @@ export default function HomePage() {
         Piano Learning Platform
       </h1>
       <div style={{ marginTop: "1.5rem", display: "flex", justifyContent: "center", gap: "1rem" }}>
-        <Link href="/teacher">
-          <button
-            style={{
-              padding: "0.5rem 1rem",
-              backgroundColor: "#0070f3",
-              color: "#fff",
-              border: "none",
-              borderRadius: "4px",
-              cursor: "pointer"
-            }}
-          >
-            Teacher Interface
-          </button>
-        </Link>
         <Link href="/learner">
           <button
             style={{

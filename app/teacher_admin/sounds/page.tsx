@@ -49,14 +49,14 @@ export default function TeacherSoundsPage() {
               
               <div className="mt-4 flex justify-between">
                 <Link 
-                  href={`/teacher/editor?soundId=${sound.id}`}
+                  href={`/teacher_admin/editor?soundId=${sound.id}`}
                   className="px-3 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm"
                 >
                   Edit Annotations
                 </Link>
                 
                 <Link 
-                  href={`/teacher/play?soundId=${sound.id}`}
+                  href={`/teacher_admin/play?soundId=${sound.id}`}
                   className="px-3 py-2 bg-green-500 text-white rounded hover:bg-green-600 text-sm"
                 >
                   Play

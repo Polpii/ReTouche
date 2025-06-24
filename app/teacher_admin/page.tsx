@@ -30,6 +30,7 @@ export default function TeacherListPage() {
   return (
     <div
       style={{
+        color: "#fff",
         padding: "2rem",
         fontFamily: "Arial, sans-serif",
         maxWidth: "800px",
@@ -56,7 +57,7 @@ export default function TeacherListPage() {
       <h4 style={{ fontSize: "1rem", marginBottom: "0.5rem" }}>Add a song</h4>
       <div style={{ marginBottom: "2rem" }}>
         <label style={{ fontSize: "0.9rem" }}>
-          Titre du son:{" "}
+          Song's title:{" "}
           <input
             type="text"
             value={title}
@@ -82,12 +83,13 @@ export default function TeacherListPage() {
           Create song
         </button>
       </div>
-      <h4 style={{ fontSize: "1rem", marginBottom: "0.5rem" }}>Liste des sons</h4>
+      <h4 style={{ fontSize: "1rem", marginBottom: "0.5rem" }}>Song list</h4>
       <ul style={{ listStyle: "none", padding: 0 }}>
         {sounds.map((sound) => (
           <li
             key={sound.id}
             style={{
+              color: "#fff",
               marginBottom: "1rem",
               border: "1px solid #ccc",
               padding: "0.5rem",
@@ -96,7 +98,7 @@ export default function TeacherListPage() {
           >
             <strong>{sound.title}</strong>
             <div style={{ marginTop: "0.5rem" }}>
-              <Link href={`/teacher/editor/${sound.id}`}>
+              <Link href={`/teacher_admin/editor/${sound.id}`}>
                 <button
                   style={{
                     marginRight: "0.5rem",

@@ -210,6 +210,7 @@ export default function EditorPage() {
   return (
     <div
       style={{
+        backgroundColor: "#f0f0f0",
         padding: "1rem",
         fontFamily: "Arial, sans-serif",
         maxWidth: "100vw",
@@ -235,7 +236,7 @@ export default function EditorPage() {
             }}
           >
             <div style={{ position: "absolute", left: 0, display: "flex", gap: "0.5rem" }}>
-              <Link href="/teacher">
+              <Link href="/teacher_admin">
                 <button
                   style={{
                     padding: "0.5rem 1rem",
@@ -277,21 +278,6 @@ export default function EditorPage() {
                 }}
               >
                 ▶
-              </button>
-              <button
-                onClick={toggleSecondScreen}
-                style={{
-                  padding: "0.5rem 1rem",
-                  backgroundColor: secondScreenEnabled ? "#28a745" : "#6c757d",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: "4px",
-                  fontSize: "0.9rem",
-                  cursor: "pointer",
-                  marginLeft: "1rem"
-                }}
-              >
-                {secondScreenEnabled ? "Désactiver 2ème écran" : "Activer 2ème écran"}
               </button>
             </div>
             <h1 style={{ margin: 0, fontSize: "1.5rem", textAlign: "center" }}>
