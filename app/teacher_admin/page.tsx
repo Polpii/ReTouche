@@ -30,7 +30,7 @@ export default function TeacherListPage() {
   return (
     <div
       style={{
-        color: "#fff",
+        backgroundColor: "#fff",
         padding: "2rem",
         fontFamily: "Arial, sans-serif",
         maxWidth: "800px",
@@ -57,7 +57,7 @@ export default function TeacherListPage() {
       <h4 style={{ fontSize: "1rem", marginBottom: "0.5rem" }}>Add a song</h4>
       <div style={{ marginBottom: "2rem" }}>
         <label style={{ fontSize: "0.9rem" }}>
-          Song's title:{" "}
+          Song title:{" "}
           <input
             type="text"
             value={title}
@@ -83,7 +83,7 @@ export default function TeacherListPage() {
           Create song
         </button>
       </div>
-      <h4 style={{ fontSize: "1rem", marginBottom: "0.5rem" }}>Song list</h4>
+      <h4 style={{ fontSize: "1rem", marginBottom: "0.5rem" }}>List songs</h4>
       <ul style={{ listStyle: "none", padding: 0 }}>
         {sounds.map((sound) => (
           <li
