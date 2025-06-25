@@ -14,17 +14,16 @@ interface Props {
   speed: number;
   width: number;
   height: number;
-  oversample?: number;          // ← nouveau
 }
 
 /* ─── Constantes ─────────────────────────────────────────────────────────── */
-const LOOKAHEAD  = 5;
+const LOOKAHEAD  = 5;                 // s visibles
 const NB_KEYS    = 88;
 const FIRST_MIDI = 21;
 const WHITE_KEYS = new Set([0, 2, 4, 5, 7, 9, 11]);
 
-const GAP_PX     = 2;
-const RADIUS_PX  = 2;
+const GAP_PX     = 2;                 // espace vertical
+const RADIUS_PX  = 2;                 // arrondi des coins (≃ 3-4 px)
 
 /* ─── Helpers ────────────────────────────────────────────────────────────── */
 const noteColor = (m: number) =>
@@ -39,6 +38,7 @@ const shade = (hex: string, pct: number) => {
   return "#" + ((1 << 24) + (R << 16) + (G << 8) + B).toString(16).slice(1);
 };
 
+/* Dessine un rectangle arrondi universel (fallback si roundRect absent) */
 function drawRoundedRect(
   ctx: CanvasRenderingContext2D,
   x: number,
@@ -48,8 +48,10 @@ function drawRoundedRect(
   r: number
 ) {
   if ((ctx as any).roundRect) {
+    // navigateurs modernes : plus simple
     (ctx as any).roundRect(x, y, w, h, r);
   } else {
+    // polyfill
     r = Math.min(r, w / 2, h / 2);
     ctx.beginPath();
     ctx.moveTo(x + r, y);
@@ -73,28 +75,17 @@ export default function MidiFallingNotes({
   speed,
   width,
   height,
-  oversample = 1,                // ← valeur par défaut
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef    = useRef<number | null>(null);
 
   useEffect(() => {
-    /* --- Préparation canvas ------------------------------------------------ */
     const canvas = canvasRef.current!;
-    const dpr = (window.devicePixelRatio || 1) * oversample;
-
-    canvas.style.width  = `${width}px`;
-    canvas.style.height = `${height}px`;
-    canvas.width  = width  * dpr;
-    canvas.height = height * dpr;
-
+    canvas.width  = width;
+    canvas.height = height;
     const ctx  = canvas.getContext("2d")!;
-    ctx.scale(dpr, dpr);
-    ctx.imageSmoothingEnabled = false;
+    const keyW = width / NB_KEYS;
 
-    const keyW = Math.round(width / NB_KEYS);
-
-    /* --- Boucle d’animation ----------------------------------------------- */
     const draw = () => {
       const now = ((performance.now() - sectionStart) / 1000) * speed;
 
@@ -107,7 +98,7 @@ export default function MidiFallingNotes({
       for (const ev of events) {
         const dtHead = ev.time - now;
         const dtTail = ev.time + ev.duration - now;
-        if (dtHead > LOOKAHEAD || dtTail < 0) continue;
+        if (dtHead > LOOKAHEAD || dtTail < 0) continue; // hors champ
 
         const head = Math.min(Math.max(dtHead, 0), LOOKAHEAD);
         const tail = Math.min(Math.max(dtTail, 0), LOOKAHEAD);
@@ -120,8 +111,8 @@ export default function MidiFallingNotes({
         const rectH   = yBottom - yTop;
         if (rectH <= 0) continue;
 
-        const x   = Math.round(((ev.midi - FIRST_MIDI) / (NB_KEYS - 1)) * width);
-        const col = noteColor(ev.midi);
+        const x     = ((ev.midi - FIRST_MIDI) / (NB_KEYS - 1)) * width;
+        const col   = noteColor(ev.midi);
         const grad  = ctx.createLinearGradient(0, yTop, 0, yBottom);
         grad.addColorStop(0, shade(col, +20));
         grad.addColorStop(0.12, col);
@@ -139,7 +130,7 @@ export default function MidiFallingNotes({
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-  }, [events, sectionStart, speed, width, height, oversample]);  // ← oversample
+  }, [events, sectionStart, speed, width, height]);
 
   return <canvas ref={canvasRef} />;
 }
