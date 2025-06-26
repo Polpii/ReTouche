@@ -56,7 +56,7 @@ export default function VideoTransportBar({
         step={0.1}
         value={currentTime}
         onChange={(e) => onSeekAbs(parseFloat(e.currentTarget.value))}
-        style={{ width: "100%" }}   // occupe toute la largeur du conteneur
+        style={{ width: "203vh" }}   // occupe toute la largeur du conteneur
       />
 
       {/* ─── Boutons sous le slider ─────────────────────────────────── */}
@@ -75,13 +75,9 @@ export default function VideoTransportBar({
         <button style={btn} onClick={() => onSeekRel(5)}>⟳</button>
         {children}
 
-        {/* horloge, facultatif mais pratique */}
-        <span style={{ fontSize:"1.5rem", fontVariantNumeric: "tabular-nums" }}>
-          {currentTime.toFixed(1)} / {duration.toFixed(1)}
-        </span>
         {/* slot aligné à droite */}
         {rightSlot && (
-          <div style={{position:"absolute", right:200, top:0, height:"100%", display:"flex", alignItems:"center", gap:"0.6rem"}}>
+          <div style={{position:"absolute", right:"2vh", top:0, height:"100%", display:"flex", alignItems:"center", gap:"0.6rem"}}>
             {rightSlot}
           </div>
         )}

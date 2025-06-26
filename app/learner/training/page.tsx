@@ -2100,7 +2100,7 @@ const playRecordedMidi = () => {
                   <span>Recorded:</span>
                   <button
                     onClick={() => setDropdownOpen(!dropdownOpen)}
-                    style={{ padding: "8px 16px", borderRadius: "4px", border: "1px solid #ccc", fontSize: "1.5rem", cursor: "pointer", width: "300px", whiteSpace: "nowrap" }}
+                    style={{ padding: "8px 16px", borderRadius: "4px", border: "1px solid #ccc", fontSize: "1.5rem", cursor: "pointer", width: "30rem", whiteSpace: "nowrap" }}
                   >
                     {selectedRecordedName ? formatDisplay(selectedRecordedName) : "-- Select --"}
                   </button>
@@ -2141,7 +2141,31 @@ const playRecordedMidi = () => {
                   )}
                 </div>
               )}
-            >
+            >              
+              <button onClick={handleStop} style={{ backgroundColor: "#dc3545", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2.4rem" }}>
+                ◼
+              </button>
+              <button onClick={handleRecordButton} style={{ backgroundColor: "#dc3545", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2.4rem", animation: isRecording ? "blinkRecord 0.7s infinite" : "none" }}>
+                ⬤
+              </button>
+              {/* Le bouton Save (💾) reste inchangé pour sauvegarder vers Firebase */}
+              {performanceVideoURL && !isPerformanceRecording ? (
+                <button
+                  onClick={handleSavePerformance}
+                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2.4rem" }}
+                >
+                  💾
+                </button>
+              ) : null}
+              {/* Bouton fleche tournante modifié : il charge le fichier performance depuis le local storage */}
+              {performanceVideoURL && !isPerformanceRecording ? (
+                <button
+                  onClick={handleListenPreviousButton}
+                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2.4rem" }}
+                >
+                  👁️
+                </button>
+              ) : null}
               {currentLearnerName === "Polpii" && (
                 <>
                   <button
@@ -2167,30 +2191,6 @@ const playRecordedMidi = () => {
                   </div>
                 </>
               )}
-              <button onClick={handleStop} style={{ backgroundColor: "#dc3545", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2.4rem" }}>
-                ◼
-              </button>
-              <button onClick={handleRecordButton} style={{ backgroundColor: "#dc3545", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2.4rem", animation: isRecording ? "blinkRecord 0.7s infinite" : "none" }}>
-                ⬤
-              </button>
-              {/* Le bouton Save (💾) reste inchangé pour sauvegarder vers Firebase */}
-              {performanceVideoURL && !isPerformanceRecording ? (
-                <button
-                  onClick={handleSavePerformance}
-                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2.4rem" }}
-                >
-                  💾
-                </button>
-              ) : null}
-              {/* Bouton fleche tournante modifié : il charge le fichier performance depuis le local storage */}
-              {performanceVideoURL && !isPerformanceRecording ? (
-                <button
-                  onClick={handleListenPreviousButton}
-                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2.4rem" }}
-                >
-                  👁️
-                </button>
-              ) : null}
             </VideoTransportBar>
           </div>
         </div>        
@@ -2203,7 +2203,7 @@ const playRecordedMidi = () => {
           <div style={{
             display:"flex",
             alignItems:"center",
-            gap:"0.2rem",
+            gap:"2rem",
             background:"#e0f7fa",
             padding:"0.3rem 0.6rem",
             borderRadius:"6px",

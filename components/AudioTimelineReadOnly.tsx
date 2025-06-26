@@ -67,8 +67,10 @@ const AudioTimelineReadOnly: React.FC<Props> = ({
       if (!timelineRef.current) return;
       const { left } = timelineRef.current.getBoundingClientRect();
       drag.current = { idx, start: local[idx].start, px: e.clientX - left };
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", onStop);
+      //window.addEventListener("mousemove", onMove);
+      //window.addEventListener("mouseup", onStop);
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup",   onStop);
     };
 
   const onMove = (e: MouseEvent) => {
@@ -92,8 +94,10 @@ const AudioTimelineReadOnly: React.FC<Props> = ({
 
   const onStop = () => {
     drag.current = null;
-    window.removeEventListener("mousemove", onMove);
-    window.removeEventListener("mouseup", onStop);
+    //window.removeEventListener("mousemove", onMove);
+    //window.removeEventListener("mouseup", onStop);
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup",   onStop);
   };
 
   /* ────────── canvas : piano-roll ────────── */
@@ -210,8 +214,10 @@ const AudioTimelineReadOnly: React.FC<Props> = ({
             transform: "translateX(-50%)",
             cursor: "ew-resize",
             zIndex: 3,
+            touchAction: "none",
           }}
-          onMouseDown={onStartDrag(i)}
+          //onMouseDown={onStartDrag(i)}
+          onPointerDown={onStartDrag(i)}
         >
           <div
             style={{
