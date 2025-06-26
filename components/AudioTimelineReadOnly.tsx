@@ -206,7 +206,7 @@ const AudioTimelineReadOnly: React.FC<Props> = ({
           style={{
             position: "absolute",
             left: `${leftPct}%`,
-            top: -30,
+            top: -50,
             transform: "translateX(-50%)",
             cursor: "ew-resize",
             zIndex: 3,
@@ -217,9 +217,9 @@ const AudioTimelineReadOnly: React.FC<Props> = ({
             style={{
               width: 0,
               height: 0,
-              borderLeft: "18px solid transparent",
-              borderRight: "18px solid transparent",
-              borderTop: "20px solid #800080",
+              borderLeft: "36px solid transparent",
+              borderRight: "36px solid transparent",
+              borderTop: "50px solid #800080",
             }}
           />
         </div>
@@ -268,15 +268,15 @@ const AudioTimelineReadOnly: React.FC<Props> = ({
           style={{
             position: "absolute",
             left: `${leftPct}%`,
-            top: -16,
+            top: -20,
             transform: "translateX(-50%)",
             background: "green",
             border: "2px solid green",
             borderRadius: "50%",
-            width: 22,
-            height: 22,
+            width: 44,
+            height: 44,
             color: "#fff",
-            fontSize: 12,
+            fontSize: 24,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",

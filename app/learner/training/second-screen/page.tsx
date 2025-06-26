@@ -573,7 +573,7 @@ function SecondScreenInner() {
             speed={isPlaying ? speed : 0}
             width={absCrop.width}
             height={absCrop.height}
-            oversample={4} 
+            oversample={10} 
           />
         </PerspectiveTransform>
       </div>

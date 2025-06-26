@@ -1,4 +1,4 @@
-import React, { ReactNode, CSSProperties } from "react";
+import React, { ReactNode } from "react";
 
 interface VideoTransportBarProps {
   currentTime: number;
@@ -8,19 +8,7 @@ interface VideoTransportBarProps {
   onSeekAbs: (t: number) => void;
   onSeekRel: (d: number) => void;
   children?: ReactNode;
-  rightSlot?: ReactNode;
 }
-
-/* Style de base pour tous les boutons de la barre */
-const btn: CSSProperties = {
-  background: "#0070f3",
-  color: "#fff",
-  padding: "1rem 2rem",
-  border: "none",
-  borderRadius: "4px",
-  cursor: "pointer",
-  fontSize: "2.4rem",
-};
 
 /**
  * Barre de transport :
@@ -35,7 +23,6 @@ export default function VideoTransportBar({
   onSeekAbs,
   onSeekRel,
   children,
-  rightSlot,
 }: VideoTransportBarProps) {
   return (
     <div
@@ -62,29 +49,22 @@ export default function VideoTransportBar({
       {/* ─── Boutons sous le slider ─────────────────────────────────── */}
       <div
         style={{
-          position: "relative",
           display: "flex",
+          justifyContent: "center",
           alignItems: "center",
-          gap: "1.5rem",
-          //justifyContent: "center", //
+          gap: "0.75rem",
         }}
       >
-        <button style={btn} onClick={onPlay}>▷</button>
-        <button style={btn} onClick={onPause}>❚❚</button>
-        <button style={btn} onClick={() => onSeekRel(-5)}>⟲</button>
-        <button style={btn} onClick={() => onSeekRel(5)}>⟳</button>
+        <button onClick={onPlay}>▷</button>
+        <button onClick={onPause}>❚❚</button>
         {children}
+        <button onClick={() => onSeekRel(-5)}>⟲</button>
+        <button onClick={() => onSeekRel(5)}>⟳</button>
 
         {/* horloge, facultatif mais pratique */}
-        <span style={{ fontSize:"1.5rem", fontVariantNumeric: "tabular-nums" }}>
+        <span style={{ fontVariantNumeric: "tabular-nums" }}>
           {currentTime.toFixed(1)} / {duration.toFixed(1)}
         </span>
-        {/* slot aligné à droite */}
-        {rightSlot && (
-          <div style={{position:"absolute", right:200, top:0, height:"100%", display:"flex", alignItems:"center", gap:"0.6rem"}}>
-            {rightSlot}
-          </div>
-        )}
       </div>
     </div>
   );
