@@ -19,7 +19,7 @@ const btn: CSSProperties = {
   border: "none",
   borderRadius: "4px",
   cursor: "pointer",
-  fontSize: "2.4rem",
+  fontSize: "2rem",
 };
 
 /**
@@ -77,7 +77,7 @@ export default function VideoTransportBar({
 
         {/* slot aligné à droite */}
         {rightSlot && (
-          <div style={{position:"absolute", right:"2vh", top:0, height:"100%", display:"flex", alignItems:"center", gap:"0.6rem"}}>
+          <div style={{position:"absolute", right:"1vh", top:0, height:"100%", display:"flex", alignItems:"center", gap:"0.6rem"}}>
             {rightSlot}
           </div>
         )}

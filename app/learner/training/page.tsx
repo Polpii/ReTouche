@@ -2096,11 +2096,11 @@ const playRecordedMidi = () => {
                 if (videoIsPlaying) startMidiFrom(newTime);
               }}
               rightSlot={recordedVideos.length > 0 && (
-                <div style={{ position: "relative", fontSize: "1.5rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <div style={{ position: "relative", fontSize: "1.2rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
                   <span>Recorded:</span>
                   <button
                     onClick={() => setDropdownOpen(!dropdownOpen)}
-                    style={{ padding: "8px 16px", borderRadius: "4px", border: "1px solid #ccc", fontSize: "1.5rem", cursor: "pointer", width: "15rem", whiteSpace: "nowrap" }}
+                    style={{ padding: "8px 16px", borderRadius: "4px", border: "1px solid #ccc", fontSize: "1.2rem", cursor: "pointer", width: "25rem", whiteSpace: "nowrap" }}
                   >
                     {selectedRecordedName ? formatDisplay(selectedRecordedName) : "-- Select --"}
                   </button>
@@ -2111,6 +2111,7 @@ const playRecordedMidi = () => {
                       left: 0,
                       backgroundColor: "#fff",
                       border: "1px solid #ccc",
+                      fontSize: "0.8rem",
                       borderRadius: "4px",
                       zIndex: 100,
                       width: "100%"
@@ -2142,17 +2143,17 @@ const playRecordedMidi = () => {
                 </div>
               )}
             >              
-              <button onClick={handleStop} style={{ backgroundColor: "#dc3545", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2.4rem" }}>
+              <button onClick={handleStop} style={{ backgroundColor: "#dc3545", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2rem" }}>
                 ◼
               </button>
-              <button onClick={handleRecordButton} style={{ backgroundColor: "#dc3545", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2.4rem", animation: isRecording ? "blinkRecord 0.7s infinite" : "none" }}>
+              <button onClick={handleRecordButton} style={{ backgroundColor: "#dc3545", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2rem", animation: isRecording ? "blinkRecord 0.7s infinite" : "none" }}>
                 ⬤
               </button>
               {/* Le bouton Save (💾) reste inchangé pour sauvegarder vers Firebase */}
               {performanceVideoURL && !isPerformanceRecording ? (
                 <button
                   onClick={handleSavePerformance}
-                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2.4rem" }}
+                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2rem" }}
                 >
                   💾
                 </button>
@@ -2161,7 +2162,7 @@ const playRecordedMidi = () => {
               {performanceVideoURL && !isPerformanceRecording ? (
                 <button
                   onClick={handleListenPreviousButton}
-                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2.4rem" }}
+                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2rem" }}
                 >
                   👁️
                 </button>
