@@ -2100,7 +2100,7 @@ const playRecordedMidi = () => {
                   <span>Recorded:</span>
                   <button
                     onClick={() => setDropdownOpen(!dropdownOpen)}
-                    style={{ padding: "8px 16px", borderRadius: "4px", border: "1px solid #ccc", fontSize: "1.5rem", cursor: "pointer", width: "30rem", whiteSpace: "nowrap" }}
+                    style={{ padding: "8px 16px", borderRadius: "4px", border: "1px solid #ccc", fontSize: "1.5rem", cursor: "pointer", width: "15rem", whiteSpace: "nowrap" }}
                   >
                     {selectedRecordedName ? formatDisplay(selectedRecordedName) : "-- Select --"}
                   </button>

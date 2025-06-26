@@ -65,7 +65,7 @@ export default function VideoTransportBar({
           position: "relative",
           display: "flex",
           alignItems: "center",
-          gap: "1.5rem",
+          gap: "1rem",
           //justifyContent: "center", //
         }}
       >

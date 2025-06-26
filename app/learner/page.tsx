@@ -27,7 +27,8 @@ export default function LearnerProfilePage() {
             backgroundColor: "#0070f3",
             color: "#fff",
             border: "none",
-            padding: "0.5rem 1rem",
+            padding: "1rem 2rem",
+            fontSize: "1.5rem",
             borderRadius: "4px",
             cursor: "pointer",
             marginBottom: "1rem",
@@ -37,7 +38,7 @@ export default function LearnerProfilePage() {
         </button>
       </Link>
 
-      <h3 style={{ marginBottom: "1rem" }}>Learner Profiles</h3>
+      <h3 style={{ color: "#fff", fontSize: "1.5rem", marginBottom: "2rem" }}>Learner Profiles</h3>
 
       {/* Formulaire pour créer un nouveau profil */}
       <div style={{ marginBottom: "1rem" }}>
@@ -47,7 +48,7 @@ export default function LearnerProfilePage() {
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           style={{
-            padding: "0.5rem",
+            padding: "1.5rem",
             border: "1px solid #ccc",
             borderRadius: "4px",
             marginRight: "0.5rem",
@@ -59,7 +60,8 @@ export default function LearnerProfilePage() {
             backgroundColor: "#28a745",
             color: "#fff",
             border: "none",
-            padding: "0.5rem 1rem",
+            padding: "1rem 2rem",
+            fontSize: "1.5rem",
             borderRadius: "4px",
             cursor: "pointer",
           }}
@@ -71,7 +73,7 @@ export default function LearnerProfilePage() {
       {/* Liste des profils existants */}
       <ul style={{ listStyle: "none", padding: 0 }}>
         {learners.map((learner) => (
-          <li key={learner.name} style={{ marginBottom: "0.5rem" }}>
+          <li key={learner.name} style={{ marginBottom: "2rem" }}>
             <button
               onClick={() => {
                 // On pourrait stocker le learner sélectionné dans un context 
@@ -79,7 +81,8 @@ export default function LearnerProfilePage() {
                 router.push("/learner/select-sound");
               }}
               style={{
-                padding: "0.5rem 1rem",
+                padding: "1rem 2rem",
+                fontSize: "1.5rem",
                 cursor: "pointer",
                 border: "1px solid #0070f3",
                 backgroundColor: "#fff",
