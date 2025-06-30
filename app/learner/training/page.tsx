@@ -511,9 +511,22 @@ function TrainingInner() {
     });
   };
 
+  const lastStartRef = useRef<number>(0);
+  const MIN_DELAY = 150;          // ajustez au besoin
+
+  const safeStart = (fn: () => void) => {
+    const now = Date.now();
+    if (now - lastStartRef.current > MIN_DELAY) {
+      lastStartRef.current = now;
+      fn();                       // exécute la vraie action
+    }
+  };
+
+
   // Lorsqu’une vignette est cliquée, on lance la lecture de la section.
   // À la fin, l’overlay passe à "Your turn now" et le performance recording démarre.
   const handlePlaySection = (section: Section) => {
+    clearPlayback(); 
     if (!selectedSound) return;
     
     const sectionIndex = selectedSound.sections.indexOf(section);
@@ -1078,6 +1091,30 @@ const stopPerformanceRecording = () => {
       console.error("Erreur lors de la suppression du recording:", err);
     }
   };
+
+  const clearPlayback = () => {
+    /*------------ ce qui arrête réellement ----------------*/
+    clearMidiTimeouts();
+    scheduledTimeouts.current.forEach(clearTimeout);
+    scheduledTimeouts.current = [];
+
+    // pause vidéos
+    videoRef.current?.pause();
+    recordedVideoRef.current?.pause();
+    loopVideoRef.current?.pause();
+
+    // All Notes Off
+    midiOutputRef.current?.send([0xB0, 123, 0]);
+    midiOutputRef.current?.send([0xB0, 64, 0]);
+
+    // stop éventuels enregistreurs
+    if (isRecording)      mediaRecorder?.stop();
+    if (isLooping)        loopRecorderRef.current?.stop();
+    if (isPerformanceRecording) performanceRecorderRef.current?.stop();
+    
+    /*— on ne touche PAS au second écran, overlayMessage etc. —*/
+  };
+
 
   // Transformation du bouton pause en bouton stop
   const handleStop = () => {
@@ -2060,7 +2097,7 @@ const playRecordedMidi = () => {
               totalTime={videoDuration}
               containerHeight={250}
               sections={selectedSound.sections}
-              onPlaySection={(section) => handlePlaySection(section)}
+              onPlaySection={(sec) => safeStart(() => handlePlaySection(sec))}
               currentTime={currentTime}
               noteColors={currentEvaluation}
             />
@@ -2070,11 +2107,14 @@ const playRecordedMidi = () => {
               currentTime={currentTime}
               duration={videoDuration}
 
-              onPlay={() => {
-                sendToSecond({ type: "PLAY" });
-                setVideoIsPlaying(true);  
-                startMidiFrom(currentTime);
-              }}
+              onPlay={() =>
+                safeStart(() => {
+                  clearPlayback();
+                  sendToSecond({ type: "PLAY" });
+                  setVideoIsPlaying(true);
+                  startMidiFrom(currentTime);
+                })
+              }
 
               onPause={() => {
                 sendToSecond({ type: "PAUSE" });
@@ -2153,7 +2193,7 @@ const playRecordedMidi = () => {
               {performanceVideoURL && !isPerformanceRecording ? (
                 <button
                   onClick={handleSavePerformance}
-                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2rem" }}
+                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "1rem" }}
                 >
                   💾
                 </button>
@@ -2162,7 +2202,7 @@ const playRecordedMidi = () => {
               {performanceVideoURL && !isPerformanceRecording ? (
                 <button
                   onClick={handleListenPreviousButton}
-                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2rem" }}
+                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "1rem" }}
                 >
                   👁️
                 </button>

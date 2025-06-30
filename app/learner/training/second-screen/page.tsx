@@ -9,6 +9,7 @@ import React, {
   CSSProperties,
   SyntheticEvent,
 } from "react";
+import videoSetupConfig from "../../../../public/data/videoSetupConfig.json" assert { type: "json" };
 import { useSearchParams } from "next/navigation";
 import { useSoundContext } from "../../../context/SoundContext";
 import { useLearnerContext } from "../../../context/LearnerContext";
@@ -17,6 +18,7 @@ import ContentMedia from "../../../../components/ContentMedia";
 import MidiFallingNotes, { NoteEvent } from "../../../../components/MidiFallingNotes";
 import { Midi } from "@tonejs/midi";
 import {
+  saveCalibrationConfig,
   getCalibrationConfig,
   CalibrationConfig,
   savePositionConfig,
@@ -47,6 +49,25 @@ type MessageData =
 /* ======================================================= */
 function SecondScreenInner() {
 
+  /* état qui contiendra les 4 points “globaux” */
+  const [recPtsAbs, setRecPtsAbs] = useState<Points | null>(null);
+
+  useEffect(() => {
+    getCalibrationConfig("calibration-recorded")        // ← clef fixe
+      .then(cfg => {
+        if (!cfg?.normalizedPoints) return;
+        const toAbs = (p:{x:number;y:number}) => ({ x: p.x*640, y: p.y*360 });
+        setRecPtsAbs({
+          topLeft:     toAbs(cfg.normalizedPoints.topLeft),
+          topRight:    toAbs(cfg.normalizedPoints.topRight),
+          bottomRight: toAbs(cfg.normalizedPoints.bottomRight),
+          bottomLeft:  toAbs(cfg.normalizedPoints.bottomLeft),
+        });
+      })
+      .catch(console.error);
+  }, []);
+
+
   const [isSectionPlayback, setIsSectionPlayback] = useState(false);
   const LOOKAHEAD = 5;
   /* état lecture/pause (pour figer les notes) */
@@ -75,13 +96,39 @@ function SecondScreenInner() {
   const [showNotes , setShowNotes ] = useState(true);   // Piano Rolls
   const [showVideo , setShowVideo ] = useState(true);   // Hands
 
+  useEffect(() => {
+    getCalibrationConfig("calibration-recorded")
+      .then(cfg => {
+        if (!cfg?.normalizedPoints) return;
+        const toAbs = (p: {x:number; y:number}) => ({
+          x: p.x * 640,
+          y: p.y * 360,
+        });
+        setRecPtsAbs({
+          topLeft:     toAbs(cfg.normalizedPoints.topLeft),
+          topRight:    toAbs(cfg.normalizedPoints.topRight),
+          bottomRight: toAbs(cfg.normalizedPoints.bottomRight),
+          bottomLeft:  toAbs(cfg.normalizedPoints.bottomLeft),
+        });
+      })
+      .catch(console.error);
+  }, []);
+  
 
   /* ───── gel / dégel automatique ───── */
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
 
-    const onPlay = () => { v.playbackRate = speed; setIsPlaying(true); };
+    const onPlay = () => {
+      v.playbackRate = speed;
+      setIsPlaying(true);
+       /* resynchronise les notes pour recorded / performance */
+      if (mode !== "default" && sectionEvents.length) {
+        const newStart = performance.now() - v.currentTime * 1000 + videoDelay;
+        setSectionStartTs(newStart);
+      }
+    };
     const onStop = () => { v.playbackRate = 0;     setIsPlaying(false); };
 
     v.addEventListener("play",  onPlay);
@@ -93,7 +140,7 @@ function SecondScreenInner() {
       v.removeEventListener("pause", onStop);
       v.removeEventListener("ended", onStop);
     };
-  }, [speed]);
+  }, [speed, videoUrl, mode]);
 
   /* notes à afficher */
   const [sectionEvents, setSectionEvents]   = useState<NoteEvent[]>([]);
@@ -110,16 +157,6 @@ function SecondScreenInner() {
       if (cfg) setRecCal(cfg);
     })().catch(console.error);
   }, []);
-
-
-  /* points recorded/perf */
-  const [recordedPtsAbs,setRecordedPtsAbs] = useState<Points|null>(null);
-  useEffect(() => {
-    if (!currentLearnerName || !soundId) return;
-    getPositionConfig(currentLearnerName, soundId)
-      .then(cfg => cfg?.perspectivePoints && setRecordedPtsAbs(cfg.perspectivePoints))
-      .catch(console.error);
-  }, [currentLearnerName, soundId]);
 
 
   /* points overlay notes */
@@ -147,14 +184,14 @@ function SecondScreenInner() {
     const H = recCal.baseHeight * k;
 
     absCrop = {
-      x:      recCal.normalizedCrop.x      * W,
-      y:      recCal.normalizedCrop.y      * H,
-      width:  recCal.normalizedCrop.width  * W,
-      height: recCal.normalizedCrop.height * H,
+      x:      videoSetupConfig.normalizedCrop.x      * W,
+      y:      videoSetupConfig.normalizedCrop.y      * H,
+      width:  videoSetupConfig.normalizedCrop.width  * W,
+      height: videoSetupConfig.normalizedCrop.height * H,
     };
     absOffset = {
-      x: recCal.normalizedVideoOffset.x * W,
-      y: recCal.normalizedVideoOffset.y * H,
+      x: videoSetupConfig.normalizedVideoOffset.x * W,
+      y: videoSetupConfig.normalizedVideoOffset.y * H,
     };
     absDefaultPts = {
       topLeft:     { x: recCal.normalizedPoints.topLeft.x      * W, y: recCal.normalizedPoints.topLeft.y      * H },
@@ -172,12 +209,15 @@ function SecondScreenInner() {
     const H = 360;
 
     absCrop = {
-      x: (window.innerWidth  - W) / 2,
-      y: (window.innerHeight - H) / 2,
-      width:  W,
-      height: H,
+      x:      videoSetupConfig.normalizedCrop.x      * W,
+      y:      videoSetupConfig.normalizedCrop.y      * H,
+      width:  videoSetupConfig.normalizedCrop.width  * W,
+      height: videoSetupConfig.normalizedCrop.height * H,
     };
-    absOffset = { x: 0, y: 0 };          // pas de décalage vidéo
+    absOffset = {
+      x: videoSetupConfig.normalizedVideoOffset.x * W,
+      y: videoSetupConfig.normalizedVideoOffset.y * H,
+    };
     absDefaultPts = {
       topLeft:     { x: 0, y: 0 },
       topRight:    { x: W, y: 0 },
@@ -205,16 +245,51 @@ function SecondScreenInner() {
     })();
   },[soundId,sounds]);
 
-  /* save helpers */
-  const saveRecPts = (pts: Points) => {
-    setRecordedPtsAbs(pts);
-    if (currentLearnerName)
-      savePositionConfig(currentLearnerName, soundId, {
-        position: { x: 0, y: 0 },
-        perspectivePoints: pts,
-      }).catch(console.error);
+  /* ---- calibration PAR MORCEAU (vidéo default) ------------------ */
+const [defaultPtsAbs, setDefaultPtsAbs] = useState<Points | null>(null);
+
+useEffect(() => {
+  if (!currentLearnerName || !soundId) return;
+  getPositionConfig(currentLearnerName, soundId)
+    .then(cfg => cfg?.perspectivePoints && setDefaultPtsAbs(cfg.perspectivePoints))
+    .catch(console.error);
+}, [currentLearnerName, soundId]);
+
+const saveDefaultPts = (pts: Points) => {
+  setDefaultPtsAbs(pts);
+  if (currentLearnerName)
+    savePositionConfig(currentLearnerName, soundId, {
+      position: { x: 0, y: 0 },
+      perspectivePoints: pts,
+    }).catch(console.error);
+};
+
+/* ---- calibration GLOBALE (recordings / performance) ----------- */
+const saveRecPts = async (pts: Points) => {
+  setRecPtsAbs(pts);
+
+  const toNorm = (p:{x:number;y:number}) => ({ x: p.x/640, y: p.y/360 });
+  const current = await getCalibrationConfig("calibration-recorded");
+  const cfg: CalibrationConfig = current ? { ...current } : {
+    baseWidth: 640,
+    baseHeight: 360,
+    normalizedCrop:        { x:0, y:0, width:1, height:1 },
+    normalizedVideoOffset: { x:0, y:0 },
+    normalizedPoints:      { topLeft:{x:0,y:0}, topRight:{x:1,y:0}, bottomRight:{x:1,y:1}, bottomLeft:{x:0,y:1} },
   };
 
+  cfg.normalizedPoints = {
+    topLeft:     toNorm(pts.topLeft),
+    topRight:    toNorm(pts.topRight),
+    bottomRight: toNorm(pts.bottomRight),
+    bottomLeft:  toNorm(pts.bottomLeft),
+  };
+
+  await saveCalibrationConfig("calibration-recorded", cfg);
+};
+
+
+  
   const saveNotePts = (pts: Points) => {
     setNotePtsAbs(pts);
     if (currentLearnerName)
@@ -429,9 +504,16 @@ function SecondScreenInner() {
           setSectionStartTs(performance.now() + videoDelay);
           break;
         }
-        case "PLAY":
-          if (videoRef.current) playWithDelay(videoRef.current);
+        case "PLAY": {
+          const v = videoRef.current;
+          if (!v) break;
+          const newStart = performance.now()             // horloge « mur »
+                          - v.currentTime * 1000         // on retire le temps déjà écoulé
+                          + videoDelay;                  // on remet le décalage choisi
+          setSectionStartTs(newStart);
+                  playWithDelay(v);
           break;
+        }
         case "PAUSE":
           videoRef.current?.pause();
           break;
@@ -533,18 +615,23 @@ function SecondScreenInner() {
     src:string, autoPlay:boolean, loop:boolean, onEnd:()=>void
   ) => {
     if(!absCrop || !absOffset) return null;
-    const pts=recordedPtsAbs||absDefaultPts;
+    const pts = recPtsAbs || absDefaultPts;
     if(!pts) return null;
 
     const inner = src.startsWith("blob:")||src.startsWith("data:")
-      ? <video src={src} autoPlay={autoPlay} loop={loop} playsInline
-               onLoadedMetadata={e=>(e.currentTarget.playbackRate=speed)}
-               onEnded={onEnd}
-               style={{position:"absolute",left:-absOffset.x,top:-absOffset.y,width:640,height:"auto", opacity: showVideo ? 1 : 0, pointerEvents: showVideo ? "auto" : "none"}}/>
-      : <ContentMedia path={src} type="video" autoPlay={autoPlay} loop={loop} playsInline
-                      onLoadedMetadata={(e:SyntheticEvent<HTMLVideoElement>)=>(e.currentTarget.playbackRate=speed)}
-                      onEnded={onEnd}
-                      style={{position:"absolute",left:-absOffset.x,top:-absOffset.y,width:640,height:"auto", opacity: showVideo ? 1 : 0, pointerEvents: showVideo ? "auto" : "none"}}/>;
+      ? <video ref={videoRef}                           /* ← ICI */
+           src={src} autoPlay={autoPlay} loop={loop} playsInline
+           onLoadedMetadata={e=>(e.currentTarget.playbackRate=speed)}
+           onEnded={onEnd}
+           style={{position:"absolute",left:-absOffset.x,top:-absOffset.y,width:640,height:"auto", opacity: showVideo ? 1 : 0, pointerEvents: showVideo ? "auto" : "none"}}/>
+      : <video ref={videoRef}                           /* ← ET ICI */
+         src={src} autoPlay={autoPlay} loop={loop} playsInline
+         onLoadedMetadata={e => (e.currentTarget.playbackRate = speed)}
+         onEnded={onEnd}
+         style={{ position: "absolute", left: -absOffset.x, top: -absOffset.y,
+                  width: 640, height: "auto",
+                  opacity: showVideo ? 1 : 0,
+                  pointerEvents: showVideo ? "auto" : "none" }}/>;
 
     return (
       <div style={{width:absCrop.width,height:absCrop.height,position:"relative",overflow:"visible"}}>
@@ -598,16 +685,17 @@ function SecondScreenInner() {
         {mode === "default" && absDefaultPts && (
         <PerspectiveTransform
           /* on remplace le stockage local par notre state Firestore */
-          points={recordedPtsAbs || absDefaultPts}
+          points={defaultPtsAbs || absDefaultPts}
+          onPointsChange={saveDefaultPts}
           editable={editable}
           enableGroupDrag
-          onPointsChange={saveRecPts}      /* ← envoie directement dans Firestore */
         >
           <video
             ref={videoRef}
             src={videoUrl || defaultVideoUrl}
             playsInline
             style={{
+              zIndex:100,
               width: "100%",
               height: "auto",
               opacity: showVideo ? 1 : 0,

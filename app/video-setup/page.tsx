@@ -3,7 +3,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Rnd } from "react-rnd";
 import PerspectiveTransform, { Points } from "../../components/PerspectiveTransform";
-import { saveCalibrationConfig, CalibrationConfig } from "../services/calibrationService";
 import VideoPortal from "../../components/VideoPortal";
 
 interface Crop {
@@ -18,14 +17,15 @@ const VIDEO_WIDTH = 640;
 const VideoSetupPage: React.FC = () => {
   const videoRefFull = useRef<HTMLVideoElement>(null);
   const videoRefTransform = useRef<HTMLVideoElement>(null);
-
+  
   // Références pour le deuxième écran
-  const secondScreenVideoRefFull = useRef<HTMLVideoElement>(null);
-  const secondScreenVideoRefTransform = useRef<HTMLVideoElement>(null);
+  const secondVideoRefFull = useRef<HTMLVideoElement>(null);
+  const secondVideoRefTransform = useRef<HTMLVideoElement>(null);
+  
+  // État pour gérer la disponibilité du deuxième écran
+  const [secondScreenEnabled, setSecondScreenEnabled] = useState(false);
 
   const [stream, setStream] = useState<MediaStream | null>(null);
-  // État pour activer/désactiver le deuxième écran
-  const [showSecondScreen, setShowSecondScreen] = useState(false);
 
   // État du crop (en pixels)
   const [crop, setCrop] = useState<Crop>({
@@ -49,19 +49,20 @@ const VideoSetupPage: React.FC = () => {
       .getUserMedia({ video: true })
       .then((mediaStream) => {
         setStream(mediaStream);
-        // Premier écran
         if (videoRefFull.current) {
           videoRefFull.current.srcObject = mediaStream;
         }
         if (videoRefTransform.current) {
           videoRefTransform.current.srcObject = mediaStream;
         }
-        // Deuxième écran
-        if (secondScreenVideoRefFull.current) {
-          secondScreenVideoRefFull.current.srcObject = mediaStream;
-        }
-        if (secondScreenVideoRefTransform.current) {
-          secondScreenVideoRefTransform.current.srcObject = mediaStream;
+        // Préparer aussi le stream pour le deuxième écran si activé
+        if (secondScreenEnabled) {
+          if (secondVideoRefFull.current) {
+            secondVideoRefFull.current.srcObject = mediaStream;
+          }
+          if (secondVideoRefTransform.current) {
+            secondVideoRefTransform.current.srcObject = mediaStream;
+          }
         }
       })
       .catch((err) => console.error("Webcam error:", err));
@@ -71,7 +72,59 @@ const VideoSetupPage: React.FC = () => {
         stream.getTracks().forEach((track) => track.stop());
       }
     };
-  }, [stream]);
+  }, [secondScreenEnabled]);
+
+  // Synchroniser la lecture des vidéos entre les écrans
+  useEffect(() => {
+    const syncVideos = () => {
+      if (videoRefFull.current && secondVideoRefFull.current) {
+        // Synchroniser la lecture
+        if (videoRefFull.current.paused) {
+          secondVideoRefFull.current.pause();
+        } else {
+          secondVideoRefFull.current.currentTime = videoRefFull.current.currentTime;
+          secondVideoRefFull.current.play().catch(err => console.error("Erreur de lecture sur le second écran:", err));
+        }
+      }
+      
+      if (videoRefTransform.current && secondVideoRefTransform.current) {
+        // Synchroniser la lecture transformée
+        if (videoRefTransform.current.paused) {
+          secondVideoRefTransform.current.pause();
+        } else {
+          secondVideoRefTransform.current.currentTime = videoRefTransform.current.currentTime;
+          secondVideoRefTransform.current.play().catch(err => console.error("Erreur de lecture transformée sur le second écran:", err));
+        }
+      }
+    };
+    
+    // Ajouter des événements de synchronisation
+    if (videoRefFull.current) {
+      videoRefFull.current.addEventListener('play', syncVideos);
+      videoRefFull.current.addEventListener('pause', syncVideos);
+      videoRefFull.current.addEventListener('seeked', syncVideos);
+    }
+    
+    if (videoRefTransform.current) {
+      videoRefTransform.current.addEventListener('play', syncVideos);
+      videoRefTransform.current.addEventListener('pause', syncVideos);
+      videoRefTransform.current.addEventListener('seeked', syncVideos);
+    }
+    
+    return () => {
+      if (videoRefFull.current) {
+        videoRefFull.current.removeEventListener('play', syncVideos);
+        videoRefFull.current.removeEventListener('pause', syncVideos);
+        videoRefFull.current.removeEventListener('seeked', syncVideos);
+      }
+      
+      if (videoRefTransform.current) {
+        videoRefTransform.current.removeEventListener('play', syncVideos);
+        videoRefTransform.current.removeEventListener('pause', syncVideos);
+        videoRefTransform.current.removeEventListener('seeked', syncVideos);
+      }
+    };
+  }, [secondScreenEnabled]);
 
   // Au moment de sauvegarder, on enregistre :
   // - Les valeurs normalisées du crop et des points (par rapport aux dimensions réelles du flux)
@@ -101,7 +154,7 @@ const VideoSetupPage: React.FC = () => {
       y: crop.y / baseHeight,
     };
 
-    const configToSave: CalibrationConfig = {
+    const configToSave = {
       normalizedCrop,
       normalizedPoints,
       normalizedVideoOffset,
@@ -110,10 +163,6 @@ const VideoSetupPage: React.FC = () => {
     };
 
     try {
-      // Save to Firebase
-      await saveCalibrationConfig("calibration-recorded", configToSave);
-
-      // Still allow local file download
       const fileHandle = await (window as any).showSaveFilePicker({
         suggestedName: "videoSetupConfig.json",
         types: [
@@ -127,24 +176,11 @@ const VideoSetupPage: React.FC = () => {
       await writable.write(JSON.stringify(configToSave, null, 2));
       await writable.close();
 
+      localStorage.setItem("calibration-recorded", JSON.stringify(configToSave));
       alert("Configuration sauvegardée !");
     } catch (err) {
       console.error("File save error", err);
-      
-      // Try to save to Firebase even if the file save failed
-      try {
-        await saveCalibrationConfig("calibration-recorded", configToSave);
-        alert("Configuration sauvegardée sur Firebase (échec de sauvegarde en fichier local)");
-      } catch (firebaseErr) {
-        console.error("Firebase save error", firebaseErr);
-        alert("Erreur: Impossible de sauvegarder la configuration");
-      }
     }
-  };
-
-  // Fonction pour activer/désactiver le deuxième écran
-  const toggleSecondScreen = () => {
-    setShowSecondScreen(!showSecondScreen);
   };
 
   return (
@@ -210,22 +246,8 @@ const VideoSetupPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Bouton pour activer le deuxième écran */}
-      <div style={{ textAlign: "center", marginTop: "1rem" }}>
-        <button
-          onClick={toggleSecondScreen}
-          style={{
-            backgroundColor: showSecondScreen ? "#28a745" : "#6c757d",
-            color: "#fff",
-            border: "none",
-            padding: "0.5rem 1rem",
-            borderRadius: "4px",
-            cursor: "pointer",
-            marginRight: "1rem",
-          }}
-        >
-          {showSecondScreen ? "Désactiver 2ème écran" : "Activer 2ème écran"}
-        </button>
+      {/* Boutons de contrôle */}
+      <div style={{ textAlign: "left", marginTop: "1rem", display: "flex", gap: "10px", alignItems: "center" }}>
         <button
           onClick={handleDone}
           style={{
@@ -239,18 +261,35 @@ const VideoSetupPage: React.FC = () => {
         >
           Done
         </button>
+        
+        <label style={{ display: "flex", alignItems: "center", gap: "5px", cursor: "pointer" }}>
+          <input 
+            type="checkbox" 
+            checked={secondScreenEnabled}
+            onChange={(e) => setSecondScreenEnabled(e.target.checked)} 
+          />
+          Activer le deuxième écran
+        </label>
       </div>
-
-      {/* Portail vers le deuxième écran */}
-      {showSecondScreen && (
+      
+      {/* Deuxième écran (affichage dans une fenêtre séparée) */}
+      {secondScreenEnabled && (
         <VideoPortal width={1280} height={720}>
-          <div style={{ width: "100%", height: "100%", position: "relative" }}>
-            {/* Vidéo complète sur le second écran */}
-            <div style={{ position: "relative", width: "100%" }}>
-              <video ref={secondScreenVideoRefFull} autoPlay style={{ width: "100%" }} />
-            </div>
-            
-            {/* Vidéo transformée sur le second écran */}
+          {/* Zone de la vidéo complète */}
+          <div style={{ position: "relative", width: "100%", height: "50%" }}>
+            <video
+              ref={secondVideoRefFull}
+              autoPlay
+              style={{ width: "100%", height: "100%", objectFit: "contain" }}
+            />
+          </div>
+          
+          {/* Zone avec la vidéo transformée */}
+          <div style={{ 
+            position: "relative", 
+            width: "100%", 
+            height: "50%" 
+          }}>
             <div
               style={{
                 position: "absolute",
@@ -263,17 +302,16 @@ const VideoSetupPage: React.FC = () => {
             >
               <PerspectiveTransform
                 points={perspectivePoints}
-                editable={false} // La calibration se fait seulement sur le premier écran
-                enableGroupDrag={false}
+                editable={false}
               >
                 <video
-                  ref={secondScreenVideoRefTransform}
+                  ref={secondVideoRefTransform}
                   autoPlay
                   style={{
                     position: "absolute",
                     left: -crop.x,
                     top: -crop.y,
-                    width: "100%",
+                    width: VIDEO_WIDTH,
                   }}
                 />
               </PerspectiveTransform>

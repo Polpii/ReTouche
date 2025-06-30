@@ -1,13 +1,15 @@
 /* app/learner/training/second-screen/page.tsx */
 "use client";
-
+export const dynamic = "force-dynamic";
 import React, {
   useEffect,
+  Suspense,
   useState,
   useRef,
   CSSProperties,
   SyntheticEvent,
 } from "react";
+import videoSetupConfig from "../../../../public/data/videoSetupConfig.json" assert { type: "json" };
 import { useSearchParams } from "next/navigation";
 import { useSoundContext } from "../../../context/SoundContext";
 import { useLearnerContext } from "../../../context/LearnerContext";
@@ -16,6 +18,7 @@ import ContentMedia from "../../../../components/ContentMedia";
 import MidiFallingNotes, { NoteEvent } from "../../../../components/MidiFallingNotes";
 import { Midi } from "@tonejs/midi";
 import {
+  saveCalibrationConfig,
   getCalibrationConfig,
   CalibrationConfig,
   savePositionConfig,
@@ -44,7 +47,26 @@ type MessageData =
 
 
 /* ======================================================= */
-export default function SecondScreen() {
+function SecondScreenInner() {
+
+  /* état qui contiendra les 4 points “globaux” */
+  const [recPtsAbs, setRecPtsAbs] = useState<Points | null>(null);
+
+  useEffect(() => {
+    getCalibrationConfig("calibration-recorded")        // ← clef fixe
+      .then(cfg => {
+        if (!cfg?.normalizedPoints) return;
+        const toAbs = (p:{x:number;y:number}) => ({ x: p.x*640, y: p.y*360 });
+        setRecPtsAbs({
+          topLeft:     toAbs(cfg.normalizedPoints.topLeft),
+          topRight:    toAbs(cfg.normalizedPoints.topRight),
+          bottomRight: toAbs(cfg.normalizedPoints.bottomRight),
+          bottomLeft:  toAbs(cfg.normalizedPoints.bottomLeft),
+        });
+      })
+      .catch(console.error);
+  }, []);
+
 
   const [isSectionPlayback, setIsSectionPlayback] = useState(false);
   const LOOKAHEAD = 5;
@@ -74,6 +96,24 @@ export default function SecondScreen() {
   const [showNotes , setShowNotes ] = useState(true);   // Piano Rolls
   const [showVideo , setShowVideo ] = useState(true);   // Hands
 
+  useEffect(() => {
+    getCalibrationConfig("calibration-recorded")
+      .then(cfg => {
+        if (!cfg?.normalizedPoints) return;
+        const toAbs = (p: {x:number; y:number}) => ({
+          x: p.x * 640,
+          y: p.y * 360,
+        });
+        setRecPtsAbs({
+          topLeft:     toAbs(cfg.normalizedPoints.topLeft),
+          topRight:    toAbs(cfg.normalizedPoints.topRight),
+          bottomRight: toAbs(cfg.normalizedPoints.bottomRight),
+          bottomLeft:  toAbs(cfg.normalizedPoints.bottomLeft),
+        });
+      })
+      .catch(console.error);
+  }, []);
+  
 
   /* ───── gel / dégel automatique ───── */
   useEffect(() => {
@@ -111,16 +151,6 @@ export default function SecondScreen() {
   }, []);
 
 
-  /* points recorded/perf */
-  const [recordedPtsAbs,setRecordedPtsAbs] = useState<Points|null>(null);
-  useEffect(() => {
-    if (!currentLearnerName || !soundId) return;
-    getPositionConfig(currentLearnerName, soundId)
-      .then(cfg => cfg?.perspectivePoints && setRecordedPtsAbs(cfg.perspectivePoints))
-      .catch(console.error);
-  }, [currentLearnerName, soundId]);
-
-
   /* points overlay notes */
   const [notePtsAbs,setNotePtsAbs] = useState<Points|null>(null);
   useEffect(() => {
@@ -146,14 +176,14 @@ export default function SecondScreen() {
     const H = recCal.baseHeight * k;
 
     absCrop = {
-      x:      recCal.normalizedCrop.x      * W,
-      y:      recCal.normalizedCrop.y      * H,
-      width:  recCal.normalizedCrop.width  * W,
-      height: recCal.normalizedCrop.height * H,
+      x:      videoSetupConfig.normalizedCrop.x      * W,
+      y:      videoSetupConfig.normalizedCrop.y      * H,
+      width:  videoSetupConfig.normalizedCrop.width  * W,
+      height: videoSetupConfig.normalizedCrop.height * H,
     };
     absOffset = {
-      x: recCal.normalizedVideoOffset.x * W,
-      y: recCal.normalizedVideoOffset.y * H,
+      x: videoSetupConfig.normalizedVideoOffset.x * W,
+      y: videoSetupConfig.normalizedVideoOffset.y * H,
     };
     absDefaultPts = {
       topLeft:     { x: recCal.normalizedPoints.topLeft.x      * W, y: recCal.normalizedPoints.topLeft.y      * H },
@@ -171,12 +201,15 @@ export default function SecondScreen() {
     const H = 360;
 
     absCrop = {
-      x: (window.innerWidth  - W) / 2,
-      y: (window.innerHeight - H) / 2,
-      width:  W,
-      height: H,
+      x:      videoSetupConfig.normalizedCrop.x      * W,
+      y:      videoSetupConfig.normalizedCrop.y      * H,
+      width:  videoSetupConfig.normalizedCrop.width  * W,
+      height: videoSetupConfig.normalizedCrop.height * H,
     };
-    absOffset = { x: 0, y: 0 };          // pas de décalage vidéo
+    absOffset = {
+      x: videoSetupConfig.normalizedVideoOffset.x * W,
+      y: videoSetupConfig.normalizedVideoOffset.y * H,
+    };
     absDefaultPts = {
       topLeft:     { x: 0, y: 0 },
       topRight:    { x: W, y: 0 },
@@ -204,16 +237,51 @@ export default function SecondScreen() {
     })();
   },[soundId,sounds]);
 
-  /* save helpers */
-  const saveRecPts = (pts: Points) => {
-    setRecordedPtsAbs(pts);
-    if (currentLearnerName)
-      savePositionConfig(currentLearnerName, soundId, {
-        position: { x: 0, y: 0 },
-        perspectivePoints: pts,
-      }).catch(console.error);
+  /* ---- calibration PAR MORCEAU (vidéo default) ------------------ */
+const [defaultPtsAbs, setDefaultPtsAbs] = useState<Points | null>(null);
+
+useEffect(() => {
+  if (!currentLearnerName || !soundId) return;
+  getPositionConfig(currentLearnerName, soundId)
+    .then(cfg => cfg?.perspectivePoints && setDefaultPtsAbs(cfg.perspectivePoints))
+    .catch(console.error);
+}, [currentLearnerName, soundId]);
+
+const saveDefaultPts = (pts: Points) => {
+  setDefaultPtsAbs(pts);
+  if (currentLearnerName)
+    savePositionConfig(currentLearnerName, soundId, {
+      position: { x: 0, y: 0 },
+      perspectivePoints: pts,
+    }).catch(console.error);
+};
+
+/* ---- calibration GLOBALE (recordings / performance) ----------- */
+const saveRecPts = async (pts: Points) => {
+  setRecPtsAbs(pts);
+
+  const toNorm = (p:{x:number;y:number}) => ({ x: p.x/640, y: p.y/360 });
+  const current = await getCalibrationConfig("calibration-recorded");
+  const cfg: CalibrationConfig = current ? { ...current } : {
+    baseWidth: 640,
+    baseHeight: 360,
+    normalizedCrop:        { x:0, y:0, width:1, height:1 },
+    normalizedVideoOffset: { x:0, y:0 },
+    normalizedPoints:      { topLeft:{x:0,y:0}, topRight:{x:1,y:0}, bottomRight:{x:1,y:1}, bottomLeft:{x:0,y:1} },
   };
 
+  cfg.normalizedPoints = {
+    topLeft:     toNorm(pts.topLeft),
+    topRight:    toNorm(pts.topRight),
+    bottomRight: toNorm(pts.bottomRight),
+    bottomLeft:  toNorm(pts.bottomLeft),
+  };
+
+  await saveCalibrationConfig("calibration-recorded", cfg);
+};
+
+
+  
   const saveNotePts = (pts: Points) => {
     setNotePtsAbs(pts);
     if (currentLearnerName)
@@ -260,7 +328,7 @@ export default function SecondScreen() {
       videoRef.current.playbackRate = speed;
       // Lecture avec délai
       playWithDelay(videoRef.current);
-      const dur=((end-start)*1000)/speed;
+      const dur=((end-start)*1000)/speed + videoDelay;
       setTimeout(()=>{
         videoRef.current?.pause();
         if(videoRef.current) videoRef.current.currentTime=start;
@@ -274,7 +342,7 @@ export default function SecondScreen() {
     }));
     evts.sort((a,b)=>a.time-b.time);
     setSectionEvents(evts);
-    setSectionStartTs(performance.now());
+    setSectionStartTs(performance.now() + videoDelay);
   }
 
   /* ─── création des notes à afficher ───────────────────────────── */
@@ -287,12 +355,7 @@ export default function SecondScreen() {
 
   /* 2) mode DEFAULT : look-ahead classique sur le .mid de la partition */
   useEffect(() => {
-    if (
-      mode !== "default"     || 
-      !midi                  ||
-      !videoRef.current      ||
-      isSectionPlayback      // ← tant que true, on n’update pas
-    ) {
+    if (mode !== "default" || !midi || !videoRef.current || isSectionPlayback) {
       return;
     }
 
@@ -300,20 +363,30 @@ export default function SecondScreen() {
       const t0   = videoRef.current!.currentTime;
       const tMax = t0 + LOOKAHEAD;
       const evts: NoteEvent[] = [];
-      midi.tracks.forEach(tr =>
-        tr.notes.forEach(n => {
-          if (n.time >= t0 && n.time <= tMax) {
-            evts.push({ midi: n.midi, time: n.time - t0, duration: n.duration });
+
+      midi.tracks.forEach(track => {
+        track.notes.forEach(note => {
+          const start = note.time;
+          const end   = note.time + note.duration;
+          // on garde tant que la note n'est pas entièrement terminée
+          if (start <= tMax && end >= t0) {
+            evts.push({
+              midi:     note.midi,
+              time:     note.time - t0,    // peut être négatif → partie déjà passée
+              duration: note.duration
+            });
           }
-        })
-      );
-      evts.sort((a,b)=>a.time-b.time);
+        });
+      });
+
+      evts.sort((a, b) => a.time - b.time);
       setSectionEvents(evts);
       setSectionStartTs(performance.now());
     }, 150);
 
     return () => clearInterval(id);
   }, [mode, midi, speed, isSectionPlayback]);
+
 
   /* shouldLoop pour recorded */
   const shouldLoop = mode==="recorded" && !!videoUrl?.toLowerCase().endsWith("_loop.webm");
@@ -398,7 +471,7 @@ export default function SecondScreen() {
               videoRef.current?.pause();
               if (videoRef.current) videoRef.current.currentTime = first;
               setIsSectionPlayback(false);
-            }, ((last - first) * 1000) / speed);
+            }, ((last - first) * 1000) / speed + videoDelay);
           }
 
           // 4️⃣ Construit la liste fusionnée des NoteEvent
@@ -420,7 +493,7 @@ export default function SecondScreen() {
 
           // 5️⃣ Affiche-les toutes d’un coup
           setSectionEvents(merged);
-          setSectionStartTs(performance.now());
+          setSectionStartTs(performance.now() + videoDelay);
           break;
         }
         case "PLAY":
@@ -527,7 +600,7 @@ export default function SecondScreen() {
     src:string, autoPlay:boolean, loop:boolean, onEnd:()=>void
   ) => {
     if(!absCrop || !absOffset) return null;
-    const pts=recordedPtsAbs||absDefaultPts;
+    const pts = recPtsAbs || absDefaultPts;
     if(!pts) return null;
 
     const inner = src.startsWith("blob:")||src.startsWith("data:")
@@ -567,6 +640,7 @@ export default function SecondScreen() {
             speed={isPlaying ? speed : 0}
             width={absCrop.width}
             height={absCrop.height}
+            oversample={10} 
           />
         </PerspectiveTransform>
       </div>
@@ -588,25 +662,35 @@ export default function SecondScreen() {
   /* ───────────────────────── RENDU ───────────────────────── */
   return(
     <div style={wrap}>
-
-      {/* partition (default) */}
-      {mode==="default" && (
-        <PerspectiveTransform storageKey={defaultStorageKey} editable={editable} enableGroupDrag>
-          <video ref={videoRef}
-                 src={videoUrl||defaultVideoUrl}
-                 playsInline
-                 style={{width:"100%",height:"auto", opacity: showVideo ? 1 : 0, pointerEvents: showVideo ? "auto" : "none"}}
-                 onLoadedMetadata={()=>{
-                   if(videoRef.current){
-                     videoRef.current.currentTime  = 0;
-                     videoRef.current.playbackRate = 0;  // figé au chargement
-                     videoRef.current.pause();
-                   }
-                 }}
+        {mode === "default" && absDefaultPts && (
+        <PerspectiveTransform
+          /* on remplace le stockage local par notre state Firestore */
+          points={defaultPtsAbs || absDefaultPts}
+          onPointsChange={saveDefaultPts}
+          editable={editable}
+          enableGroupDrag
+        >
+          <video
+            ref={videoRef}
+            src={videoUrl || defaultVideoUrl}
+            playsInline
+            style={{
+              zIndex:100,
+              width: "100%",
+              height: "auto",
+              opacity: showVideo ? 1 : 0,
+              pointerEvents: showVideo ? "auto" : "none",
+            }}
+            onLoadedMetadata={() => {
+              if (videoRef.current) {
+                videoRef.current.currentTime = 0;
+                videoRef.current.playbackRate = 0;
+                videoRef.current.pause();
+              }
+            }}
           />
         </PerspectiveTransform>
       )}
-
       {/* recorded / performance */}
       {mode!=="default" &&
         renderRecordedLikeTraining(
@@ -626,5 +710,13 @@ export default function SecondScreen() {
       {/* overlay notes */}
       {renderNotes()}
     </div>
+  );
+}
+
+export default function SecondScreen() {
+  return (
+    <Suspense fallback={<p>Chargement…</p>}>
+      <SecondScreenInner />
+    </Suspense>
   );
 }

@@ -23,7 +23,8 @@ const NB_KEYS    = 88;
 const FIRST_MIDI = 21;
 const WHITE_KEYS = new Set([0, 2, 4, 5, 7, 9, 11]);
 
-const GAP_PX     = 2;
+const GAP_Y     = 2;
+const GAP_X      = 1;
 const RADIUS_PX  = 2;
 
 /* ─── Helpers ────────────────────────────────────────────────────────────── */
@@ -116,11 +117,14 @@ export default function MidiFallingNotes({
         const yTail = (1 - tail / LOOKAHEAD) * height;
 
         const yTop    = yTail;
-        const yBottom = yHead - GAP_PX;
+        const yBottom = yHead - GAP_Y;
         const rectH   = yBottom - yTop;
         if (rectH <= 0) continue;
 
-        const x   = Math.round(((ev.midi - FIRST_MIDI) / (NB_KEYS - 1)) * width);
+        //const x   = Math.round(((ev.midi - FIRST_MIDI) / (NB_KEYS - 1)) * width);
+        const xFull = ((ev.midi - FIRST_MIDI) / (NB_KEYS - 1)) * width;
+        const rectW = keyW - GAP_X;
+        const x     = xFull + GAP_X / 2;
         const col = noteColor(ev.midi);
         const grad  = ctx.createLinearGradient(0, yTop, 0, yBottom);
         grad.addColorStop(0, shade(col, +20));
@@ -129,7 +133,11 @@ export default function MidiFallingNotes({
         ctx.fillStyle = grad;
 
         ctx.beginPath();
-        drawRoundedRect(ctx, x, yTop, keyW, rectH, RADIUS_PX);
+        //drawRoundedRect(ctx, x, yTop, keyW, rectH, RADIUS_PX);
+        drawRoundedRect(ctx, x, yTop, rectW, rectH, RADIUS_PX);
+        ctx.lineWidth   = 0.4;
+        ctx.strokeStyle = "#000";
+        ctx.stroke();
       }
 
       rafRef.current = requestAnimationFrame(draw);
