@@ -15,11 +15,11 @@ interface VideoTransportBarProps {
 const btn: CSSProperties = {
   background: "#0070f3",
   color: "#fff",
-  padding: "0.5rem 1rem",
+  padding: "1rem 2rem",
   border: "none",
   borderRadius: "4px",
   cursor: "pointer",
-  fontSize: "1rem",
+  fontSize: "2rem",
 };
 
 /**

@@ -89,7 +89,7 @@ export default function TeacherListPage() {
           <li
             key={sound.id}
             style={{
-              color: "#fff",
+              color: "#000",
               marginBottom: "1rem",
               border: "1px solid #ccc",
               padding: "0.5rem",

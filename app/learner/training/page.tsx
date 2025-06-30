@@ -2193,7 +2193,7 @@ const playRecordedMidi = () => {
               {performanceVideoURL && !isPerformanceRecording ? (
                 <button
                   onClick={handleSavePerformance}
-                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "1rem" }}
+                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2rem" }}
                 >
                   💾
                 </button>
@@ -2202,7 +2202,7 @@ const playRecordedMidi = () => {
               {performanceVideoURL && !isPerformanceRecording ? (
                 <button
                   onClick={handleListenPreviousButton}
-                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "1rem" }}
+                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2rem" }}
                 >
                   👁️
                 </button>
