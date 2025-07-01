@@ -1435,57 +1435,104 @@ const deleteLoopFromIndexedDB = async (id: string): Promise<void> => {
   }
 };
 
-const handleLoopRecording = () => {
-  if (!isLoopingRef.current) {
-    // si on est sur la 2ᵉ+ couche, relance la boucle avant de record
-    if (loopLayers.length > 0) startLoopPlayback(loopLayers);
-    startLoopRecord();
-  } else {
-    stopLoopRecord();
+/* -------------------------------------------------- */
+/* 1. 🔴  / ⏹  – handleLoopRecording                  */
+/* -------------------------------------------------- */
+const handleLoopRecording = async () => {
+  /* ---------- 1er clic : démarrer REC ---------- */
+  if (!isLooping) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+
+      const chunks: BlobPart[] = [];
+      const recorder = new MediaRecorder(stream);
+
+      /* réinitialise le buffer MIDI & chronomètre */
+      loopMidiEventsRef.current = [];
+      loopStartTimeRef.current  = performance.now();
+
+      recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+
+      recorder.onstop = async () => {
+        /* assemble la vidéo */
+        const blob = new Blob(chunks, { type: "video/webm" });
+        await saveLoopToIndexedDB("loop_0", blob);          // persiste côté navigateur
+        const url = URL.createObjectURL(blob);
+
+        /* crée / remplace la couche unique */
+        const newLayer = {
+          videoUrl:  url,
+          midiEvents: [...loopMidiEventsRef.current],
+          startTime:  0
+        };
+        setLoopLayers([newLayer]);
+        localStorage.setItem(
+          "mirrorFugueLoopLayers",
+          JSON.stringify([{ videoUrl: "loop_0", midiEvents: newLayer.midiEvents }])
+        );
+
+        /* libère cam / micro */
+        stream.getTracks().forEach(t => t.stop());
+
+        /* reset état REC et lance la lecture en boucle */
+        setIsLooping(false);
+        isLoopingRef.current = false;
+        startLoopPlayback([newLayer]);
+      };
+
+      recorder.start();
+      loopRecorderRef.current = recorder;
+      setIsLooping(true);
+      isLoopingRef.current = true;
+    } catch (err) {
+      console.error("Impossible de démarrer l’enregistrement loop :", err);
+    }
+    return;
   }
+
+  /* ---------- 2ᵉ clic : stopper REC ---------- */
+  loopRecorderRef.current?.stop();   // le handler onstop fera le reste
 };
 
-
-
-// Fonction pour démarrer/arrêter la lecture des loops
+/* -------------------------------------------------- */
+/* 2. ▶ / ⏸ – handleLoopPlayback                      */
+/* -------------------------------------------------- */
 const handleLoopPlayback = () => {
+  if (loopLayers.length === 0) return;      // rien à lire
   if (!isLoopPlaying) {
-    startLoopPlayback(loopLayers);
+    startLoopPlayback(loopLayers);          // fonction existante → lance + boucle
   } else {
-    stopLoopPlayback();
+    stopLoopPlayback();                     // fonction existante → stop + clean
   }
 };
 
-// Fonction pour supprimer la dernière couche
+/* -------------------------------------------------- */
+/* 3. 🗑 – handleRemoveLastLayer                       */
+/* -------------------------------------------------- */
 const handleRemoveLastLayer = async () => {
-  if (loopLayers.length === 0) return;
-  
-  // Arrêter toute lecture en cours
-  stopLoopPlayback();
-  
-  // Supprimer la dernière couche
-  const updatedLayers = loopLayers.slice(0, -1);
-  setLoopLayers(updatedLayers);
-  
-  // Supprimer de IndexedDB et localStorage
-  try {
-    const layerId = `loop_${loopLayers.length - 1}`;
-    await deleteLoopFromIndexedDB(layerId);
-    
-    // Mettre à jour localStorage
-    localStorage.setItem("mirrorFugueLoopLayers", JSON.stringify(updatedLayers.map((layer, index) => ({
-      ...layer,
-      videoUrl: `loop_${index}`
-    }))));
-  } catch (error) {
-    console.error("Erreur lors de la suppression de la couche:", error);
-  }
-  
-  // Si des couches restent, redémarrer la lecture
-  if (updatedLayers.length > 0) {
-    startLoopPlayback(updatedLayers);
-  }
+  if (!loopLayers.length) return;
+
+  stopLoopPlayback();                        // stoppe toute lecture
+
+  const idx      = loopLayers.length - 1;
+  const layerId  = `loop_${idx}`;
+
+  try { await deleteLoopFromIndexedDB(layerId); } catch (e) { console.warn(e); }
+
+  const remaining = loopLayers.slice(0, idx);
+  setLoopLayers(remaining);
+
+  /* maj du localStorage */
+  localStorage.setItem(
+    "mirrorFugueLoopLayers",
+    JSON.stringify(
+      remaining.map((l, i) => ({ videoUrl: `loop_${i}`, midiEvents: l.midiEvents }))
+    )
+  );
+
+  if (remaining.length) startLoopPlayback(remaining);
 };
+
 
 // Fonction pour démarrer la lecture des loops avec correction pour assurer que le piano joue
 const startLoopPlayback = async (layers: any[]) => {
@@ -1506,9 +1553,9 @@ const startLoopPlayback = async (layers: any[]) => {
       const videoUrl = URL.createObjectURL(videoBlob);
       
       // Afficher la vidéo de la dernière couche
-      setPerformanceVideoURL(videoUrl);
-      setShowPerformancePlayback(true);
-      setIsLocalVideo(true);
+      //setPerformanceVideoURL(videoUrl);
+      //setShowPerformancePlayback(true);
+      //setIsLocalVideo(true);
       
       // Collecter tous les événements MIDI de toutes les couches
       let allMidiEvents: { data: number[], timestamp: number }[] = [];
@@ -1598,6 +1645,13 @@ const startLoopPlayback = async (layers: any[]) => {
         };
       }      
       setIsLoopPlaying(true);
+      sendToSecond({
+        type: "SHOW_RECORDED",
+        url: videoUrl,          // blob:… généré à la volée
+        loop: true,              // ⬅️ on demande explicitement la boucle
+        midiEvents: allMidiEvents
+      });
+
     } else {
       console.error("Vidéo non trouvée dans IndexedDB");
     }
@@ -1877,80 +1931,48 @@ const stopLoopRecord = () => {
   setIsLooping(false);
   isLoopingRef.current = false;
 };
-
-// Fonction dédiée pour sauvegarder une loop sur Firebase
+/* -------------------------------------------------- */
+/* 4. 💾 – handleSaveLoop                              */
+/* -------------------------------------------------- */
 const handleSaveLoop = async () => {
-  if (!isLoopPlaying || loopLayers.length === 0 || !currentLearnerName) {
-    return;
-  }
-  
+  if (loopLayers.length === 0 || !currentLearnerName) return;
+
+  /* récupère le blob de la couche 0 */
+  const blob = await getLoopFromIndexedDB("loop_0");
+  if (!blob) { console.error("Aucune loop à sauvegarder"); return; }
+
+  const base64 = await new Promise<string>(res => {
+    const fr = new FileReader();
+    fr.onloadend = () => res((fr.result as string).split(",")[1]);  // sans le préfixe data:
+    fr.readAsDataURL(blob);
+  });
+
+  /* nom de fichier horodaté + tag LOOP */
+  const now      = new Date();
+  const stamp    = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const learner  = currentLearnerName;
+  const song     = selectedSound?.title || "UnknownSong";
+  const fileName = `${stamp}_${learner}_${song}_LOOP.webm`;
+
   try {
-    // 1. Récupérer la vidéo actuelle de loop (dernière couche)
-    const layerId = `loop_${loopLayers.length - 1}`;
-    const videoBlob = await getLoopFromIndexedDB(layerId);
-    
-    if (!videoBlob) {
-      return;
+    /* upload vidéo */
+    const videoUrl = await uploadVideo(fileName, base64);
+
+    /* upload MIDI */
+    let midiUrl = "";
+    if (loopLayers[0].midiEvents.length) {
+      midiUrl = await uploadMidiData(fileName.replace(".webm", ".json"), loopLayers[0].midiEvents);
     }
-    
-    // 2. Convertir le blob en base64 sans le préfixe "data:..."
-    const reader = new FileReader();
-    reader.readAsDataURL(videoBlob);
-    
-    reader.onloadend = async () => {
-      try {
-        const base64data = reader.result as string;
-        // CORRECTION: S’assurer que le format est correct pour Firebase
-        // Supprimer le préfixe data:video/webm;base64, pour avoir uniquement la partie base64
-        const base64Clean = base64data.split(',')[1];
-        
-        // 3. Créer un nom de fichier avec l’indication "loop"
-        const dateObj = new Date();
-        const day = String(dateObj.getDate()).padStart(2, "0");
-        const month = String(dateObj.getMonth() + 1).padStart(2, "0");
-        const year = dateObj.getFullYear();
-        const hh = String(dateObj.getHours()).padStart(2, "0");
-        const mm = String(dateObj.getMinutes()).padStart(2, "0");
-        const ss = String(dateObj.getSeconds()).padStart(2, "0");
-        const dateString = `${day}-${month}-${year}_${hh}h${mm}m${ss}`;
-        const learnerName = currentLearnerName;
-        const songName = selectedSound?.title || "UnknownSong";
-        // Ajouter "LOOP" dans le nom du fichier
-        const fileName = `${dateString}_${learnerName}_${songName}_LOOP.webm`;
-        
-        // 4. Upload vers Firebase
-        const videoUrl = await uploadVideo(fileName, base64Clean);
-        
-        // 5. Upload des données MIDI
-        let midiUrl = "";
-        if (loopLayers[0].midiEvents.length > 0) {
-          midiUrl = await uploadMidiData(fileName.replace(".webm", ".json"), loopLayers[0].midiEvents);
-        }
-        
-        // 6. Ajouter à la collection du learner
-        const recordingData = { name: fileName, videoUrl, midiUrl };
-        await addRecordingToLearner(learnerName, recordingData);
-        
-        // 7. Mise à jour des états locaux
-        const newVideo: RecordedVideo = { name: fileName, blobUrl: videoUrl, midiUrl };
-        setRecordedVideos(prev => [...prev, newVideo]);
-        
-        // 8. Mise à jour du contexte
-        const currentLearner = learners.find(l => l.name === currentLearnerName);
-        if (currentLearner) {
-          const updatedLearner = {
-            ...currentLearner,
-            recordings: [...(currentLearner.recordings || []), recordingData]
-          };
-          await updateLearner(updatedLearner);
-        }
-        
-      } catch (error) {
-        console.error("Erreur lors de l’enregistrement de la loop:", error);
-      }
-    };
-  } catch (error) {
-    console.error("Erreur lors de la préparation de la loop:", error);
+
+    /* ajoute au profil */
+    const rec = { name: fileName, videoUrl, midiUrl };
+    await addRecordingToLearner(learner, rec);
+    setRecordedVideos(prev => [...prev, { name: fileName, blobUrl: videoUrl, midiUrl }]);
+
+    const l = learners.find(x => x.name === learner);
+    if (l) await updateLearner({ ...l, recordings: [...(l.recordings || []), rec] });
+  } catch (err) {
+    console.error("Erreur lors de la sauvegarde de la loop :", err);
   }
 };
 

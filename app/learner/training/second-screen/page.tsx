@@ -32,7 +32,7 @@ type MidiEvt = { data: number[]; timestamp: number };
 type MessageData =
   | { type: "SHOW_DEFAULT";     url: string }
   | { type: "SHOW_PERFORMANCE"; url: string; midiEvents?: MidiEvt[] }
-  | { type: "SHOW_RECORDED";    url: string; midiUrl?: string }
+  | { type: "SHOW_RECORDED"; url: string; midiUrl?: string; midiEvents?: MidiEvt[]; loop?: boolean }
   | { type: "PLAY_SECTION";     start: number; end: number }
   | { type: "PLAY_SECTION"; sections: { start: number; end: number }[] }
   | { type: "TOGGLE_EDIT";      editable: boolean }
@@ -44,6 +44,7 @@ type MessageData =
   | { type: "PAUSE" }
   | { type: "SEEK_ABS";         time: number }
   | { type: "SEEK_REL";         delta: number };
+  
 
 
 /* ======================================================= */
@@ -73,6 +74,9 @@ function SecondScreenInner() {
   /* état lecture/pause (pour figer les notes) */
   const [isPlaying, setIsPlaying] = useState(false);
   const [videoDelay, setVideoDelay] = useState(0); // 👈 Délai pour la vidéo (ms)
+
+  const [forceLoop, setForceLoop] = useState(false);
+
 
   /* contextes */
   const params          = useSearchParams();
@@ -397,7 +401,9 @@ const saveRecPts = async (pts: Points) => {
 
 
   /* shouldLoop pour recorded */
-  const shouldLoop = mode==="recorded" && !!videoUrl?.toLowerCase().endsWith("_loop.webm");
+  //const shouldLoop = mode==="recorded" && !!videoUrl?.toLowerCase().endsWith("_loop.webm");
+  const shouldLoop = forceLoop || (mode === "recorded" && !!videoUrl?.toLowerCase().endsWith("_loop.webm"));
+
 
   /* Fonction utilitaire pour jouer la vidéo avec délai */
   const playWithDelay = (videoElement: HTMLVideoElement) => {
@@ -438,20 +444,21 @@ const saveRecPts = async (pts: Points) => {
         case "SHOW_RECORDED":
           setMode("recorded");
           setVideoUrl(msg.url);
+          setForceLoop(!!msg.loop);
 
-          if (msg.midiUrl) {
-            // charge les events MIDI d’abord
+          if (msg.midiEvents) {
+            // le cas du looper : on a déjà les évènements
+            setExtMidiEvents(jsonEventsToNotes(msg.midiEvents));
+            if (videoRef.current) videoRef.current.currentTime = 0;
+            playWithDelay(videoRef.current!);
+          } else if (msg.midiUrl) {
+            // enregistrement “classique” -> on charge le JSON
             fetch(getProxiedUrl(msg.midiUrl))
               .then(r => r.json())
               .then((evts: MidiEvt[]) => {
-                const notes = jsonEventsToNotes(evts);
-                setExtMidiEvents(notes);
-
-                // **une fois le MIDI prêt**, on remet la vidéo à 0 et on la lance **
-                if (videoRef.current) {
-                  videoRef.current.currentTime = 0;
-                  playWithDelay(videoRef.current);
-                }
+                setExtMidiEvents(jsonEventsToNotes(evts));
+                videoRef.current!.currentTime = 0;
+                playWithDelay(videoRef.current!);
               })
               .catch(console.error);
           } else {

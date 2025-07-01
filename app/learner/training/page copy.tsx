@@ -121,6 +121,7 @@ function TrainingInner() {
   const [showPianoRolls, setShowPianoRolls] = useState(true);
   const [showHands,      setShowHands]      = useState(true);
   const [keysEnabled,    setKeysEnabled]    = useState(true);
+  const [showLooper,     setShowLooper]     = useState(false);
   /* garde une copie du "send" d’origine pour pouvoir le remettre */
   const midiSendOrigRef  = useRef<((data: any)=>void)|null>(null);
 
@@ -510,9 +511,22 @@ function TrainingInner() {
     });
   };
 
+  const lastStartRef = useRef<number>(0);
+  const MIN_DELAY = 150;          // ajustez au besoin
+
+  const safeStart = (fn: () => void) => {
+    const now = Date.now();
+    if (now - lastStartRef.current > MIN_DELAY) {
+      lastStartRef.current = now;
+      fn();                       // exécute la vraie action
+    }
+  };
+
+
   // Lorsqu’une vignette est cliquée, on lance la lecture de la section.
   // À la fin, l’overlay passe à "Your turn now" et le performance recording démarre.
   const handlePlaySection = (section: Section) => {
+    clearPlayback(); 
     if (!selectedSound) return;
     
     const sectionIndex = selectedSound.sections.indexOf(section);
@@ -1077,6 +1091,30 @@ const stopPerformanceRecording = () => {
       console.error("Erreur lors de la suppression du recording:", err);
     }
   };
+
+  const clearPlayback = () => {
+    /*------------ ce qui arrête réellement ----------------*/
+    clearMidiTimeouts();
+    scheduledTimeouts.current.forEach(clearTimeout);
+    scheduledTimeouts.current = [];
+
+    // pause vidéos
+    videoRef.current?.pause();
+    recordedVideoRef.current?.pause();
+    loopVideoRef.current?.pause();
+
+    // All Notes Off
+    midiOutputRef.current?.send([0xB0, 123, 0]);
+    midiOutputRef.current?.send([0xB0, 64, 0]);
+
+    // stop éventuels enregistreurs
+    if (isRecording)      mediaRecorder?.stop();
+    if (isLooping)        loopRecorderRef.current?.stop();
+    if (isPerformanceRecording) performanceRecorderRef.current?.stop();
+    
+    /*— on ne touche PAS au second écran, overlayMessage etc. —*/
+  };
+
 
   // Transformation du bouton pause en bouton stop
   const handleStop = () => {
@@ -2043,23 +2081,23 @@ const playRecordedMidi = () => {
       <div style={{ position: "relative", marginBottom: "1rem" }}>
         <div style={{ position: "absolute", left: 0, top: 0 }}>
           <Link href="/learner/select-sound">
-            <button style={{ backgroundColor: "#0070f3", color: "#fff", padding: "0.5rem 1rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "0.8rem" }}>
+            <button style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "1.5rem" }}>
               Back
             </button>
           </Link>
         </div>
-        <h4 style={{ textAlign: "center", fontSize: "1.5rem", margin: 0, marginBottom: "4rem" }}>{selectedSound?.title}</h4>
+        <h4 style={{ textAlign: "center", fontSize: "3rem", margin: 0, marginBottom: "4rem" }}>{selectedSound?.title}</h4>
       </div>
       {/* Timeline MIDI */}
       {selectedSound?.midiUrl && selectedSound.sections && (
         <div>
-          <div style={{ marginLeft: "0px", marginBottom: "2rem" }}>
+          <div style={{ marginLeft: "1rem", marginTop:"1rem", marginBottom: "2rem" }}>
             <AudioTimelineReadOnly
               midiUrl={selectedSound.midiUrl}
               totalTime={videoDuration}
               containerHeight={250}
               sections={selectedSound.sections}
-              onPlaySection={(section) => handlePlaySection(section)}
+              onPlaySection={(sec) => safeStart(() => handlePlaySection(sec))}
               currentTime={currentTime}
               noteColors={currentEvaluation}
             />
@@ -2069,11 +2107,14 @@ const playRecordedMidi = () => {
               currentTime={currentTime}
               duration={videoDuration}
 
-              onPlay={() => {
-                sendToSecond({ type: "PLAY" });
-                setVideoIsPlaying(true);  
-                startMidiFrom(currentTime);
-              }}
+              onPlay={() =>
+                safeStart(() => {
+                  clearPlayback();
+                  sendToSecond({ type: "PLAY" });
+                  setVideoIsPlaying(true);
+                  startMidiFrom(currentTime);
+                })
+              }
 
               onPause={() => {
                 sendToSecond({ type: "PAUSE" });
@@ -2094,121 +2135,202 @@ const playRecordedMidi = () => {
                 const newTime = Math.max(0, currentTime + d);
                 if (videoIsPlaying) startMidiFrom(newTime);
               }}
-            />
-
+              rightSlot={recordedVideos.length > 0 && (
+                <div style={{ position: "relative", fontSize: "1.2rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <span>Recorded:</span>
+                  <button
+                    onClick={() => setDropdownOpen(!dropdownOpen)}
+                    style={{ padding: "8px 16px", borderRadius: "4px", border: "1px solid #ccc", fontSize: "1.2rem", cursor: "pointer", width: "25rem", whiteSpace: "nowrap" }}
+                  >
+                    {selectedRecordedName ? formatDisplay(selectedRecordedName) : "-- Select --"}
+                  </button>
+                  {dropdownOpen && (
+                    <div style={{
+                      position: "absolute",
+                      top: "100%",
+                      left: 0,
+                      backgroundColor: "#fff",
+                      border: "1px solid #ccc",
+                      fontSize: "0.8rem",
+                      borderRadius: "4px",
+                      zIndex: 100,
+                      width: "100%"
+                    }}>
+                      {recordedVideos.map(rv => (
+                        <div key={rv.name} 
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            padding: "4px 8px",
+                            cursor: "pointer",
+                            borderBottom: "1px solid #eee",
+                            whiteSpace: "nowrap"
+                          }}
+                          onClick={() => { setSelectedRecordedName(rv.name); setDropdownOpen(false); sendToSecond({ type: "SHOW_RECORDED", url: rv.blobUrl, midiUrl: rv.midiUrl }); }}
+                        >
+                          <span onClick={(e) => { e.stopPropagation(); handleDeleteRecording(rv.name); }} style={{ cursor: "pointer", color: "red", marginRight: "4px" }}>x</span>
+                          <span>{formatDisplay(rv.name)}</span>
+                          <span 
+                            onClick={(e) => { e.stopPropagation(); openNoteModal(rv.name); }} 
+                            style={{ cursor: "pointer", fontSize: "16px" }}
+                          >
+                            📒
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            >              
+              <button onClick={handleStop} style={{ backgroundColor: "#dc3545", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2rem" }}>
+                ◼
+              </button>
+              <button onClick={handleRecordButton} style={{ backgroundColor: "#dc3545", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2rem", animation: isRecording ? "blinkRecord 0.7s infinite" : "none" }}>
+                ⬤
+              </button>
+              {/* Le bouton Save (💾) reste inchangé pour sauvegarder vers Firebase */}
+              {performanceVideoURL && !isPerformanceRecording ? (
+                <button
+                  onClick={handleSavePerformance}
+                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2rem" }}
+                >
+                  💾
+                </button>
+              ) : null}
+              {/* Bouton fleche tournante modifié : il charge le fichier performance depuis le local storage */}
+              {performanceVideoURL && !isPerformanceRecording ? (
+                <button
+                  onClick={handleListenPreviousButton}
+                  style={{ backgroundColor: "#0070f3", color: "#fff", padding: "1rem 2rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "2rem" }}
+                >
+                  👁️
+                </button>
+              ) : null}
+              {currentLearnerName === "Polpii" && (
+                <>
+                  <button
+                    onClick={handleSavePosition}
+                    style={{
+                      backgroundColor: "#6c757d",
+                      color: "#fff",
+                      padding: "0.25rem 0.5rem",
+                      borderRadius: "4px",
+                      border: "none",
+                      cursor: "pointer",
+                      fontSize: "0.5rem",
+                    }}
+                  >
+                    Save Position
+                  </button>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    <IOSSwitch checked={editable} 
+                    onChange={() => {
+                      setEditable(!editable); 
+                      sendToSecond({ type: "TOGGLE_EDIT", editable: !editable });}}/>
+                    <span style={{ fontSize: "0.5rem" }}>Edit Transform</span>
+                  </div>
+                </>
+              )}
+            </VideoTransportBar>
           </div>
         </div>        
       )}
-
       {/* Barre de contrôles */}
-      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "center", gap: "1rem", marginTop: "2rem", marginBottom: "0rem" }}>
-      {currentLearnerName === "Polpii" && (
-        <>
-          <button
-            onClick={handleSavePosition}
-            style={{
-              backgroundColor: "#6c757d",
-              color: "#fff",
-              padding: "0.25rem 0.5rem",
-              borderRadius: "4px",
-              border: "none",
-              cursor: "pointer",
-              fontSize: "0.5rem",
-            }}
-          >
-            Save Position
-          </button>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <IOSSwitch checked={editable} 
-            onChange={() => {
-              setEditable(!editable); 
-              sendToSecond({ type: "TOGGLE_EDIT", editable: !editable });}}/>
-            <span style={{ fontSize: "0.5rem" }}>Edit Transform</span>
+      <div id="controlBar" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "center", gap: "1rem", marginTop: "4rem", marginBottom: "0rem" }}>
+        {showLooper && (
+          <>
+          {/* Nouveaux boutons du Looper avec un style distinctif */}
+          <div style={{
+            display:"flex",
+            alignItems:"center",
+            gap:"2rem",
+            background:"#e0f7fa",
+            padding:"0.3rem 0.6rem",
+            borderRadius:"6px",
+            border:"1px solid #4dd0e1",
+            marginTop:"0.5rem",
+          }}>
+            <span style={{ fontSize: "1.2rem", fontWeight: "bold", color: "#00838f" }}>LOOPER:</span>
+            <button 
+              onClick={handleLoopRecording} 
+              style={{ 
+                backgroundColor: isLooping ? "#ff5722" : "#009688", 
+                color: "#fff", 
+                padding: "0.3rem 0.7rem", 
+                borderRadius: "4px", 
+                border: "none", 
+                cursor: "pointer", 
+                fontSize: "1.2rem",
+                animation: isLooping ? "blinkRecord 0.7s infinite" : "none"
+              }}
+            >
+              {isLooping ? "⏹ STOP" : "🔴 REC"}
+            </button>
+            <button 
+              onClick={handleLoopPlayback}
+              disabled={loopLayers.length === 0} 
+              style={{ 
+                backgroundColor: isLoopPlaying ? "#ff9800" : "#4caf50", 
+                color: "#fff", 
+                padding: "0.3rem 0.7rem",  
+                borderRadius: "4px", 
+                border: "none", 
+                cursor: loopLayers.length > 0 ? "pointer" : "not-allowed", 
+                fontSize: "1.2rem",
+                opacity: loopLayers.length > 0 ? 1 : 0.5,
+              }}
+            >
+              {isLoopPlaying ? "⏸ PAUSE" : "▶ PLAY"}
+            </button>
+            <button 
+              onClick={handleRemoveLastLayer}
+              disabled={loopLayers.length === 0} 
+              style={{ 
+                backgroundColor: "#f44336", 
+                color: "#fff", 
+                padding: "0.3rem 0.7rem",  
+                borderRadius: "4px", 
+                border: "none", 
+                cursor: loopLayers.length > 0 ? "pointer" : "not-allowed", 
+                fontSize: "1.2rem",
+                opacity: loopLayers.length > 0 ? 1 : 0.5,
+              }}
+            >
+              🗑 LAYER
+            </button>
+            <button 
+              onClick={handleSaveLoop}
+              disabled={loopLayers.length === 0} 
+              style={{ 
+                backgroundColor: "#3f51b5", 
+                color: "#fff", 
+                padding: "0.3rem 0.7rem", 
+                borderRadius: "4px", 
+                border: "none", 
+                cursor: loopLayers.length > 0 ? "pointer" : "not-allowed", 
+                fontSize: "1.2rem",
+                opacity: loopLayers.length > 0 ? 1 : 0.5,
+              }}
+            >
+              💾 SAVE
+            </button>
           </div>
-        </>
-      )}
-
-        {/* Le bouton Save (💾) reste inchangé pour sauvegarder vers Firebase */}
-        {performanceVideoURL && !isPerformanceRecording ? (
-          <button
-            onClick={handleSavePerformance}
-            style={{ backgroundColor: "#0070f3", color: "#fff", padding: "0.5rem 1rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "1.2rem" }}
-          >
-            💾
-          </button>
-        ) : null}
-        {/* Bouton fleche tournante modifié : il charge le fichier performance depuis le local storage */}
-        {performanceVideoURL && !isPerformanceRecording ? (
-          <button
-            onClick={handleListenPreviousButton}
-            style={{ backgroundColor: "#0070f3", color: "#fff", padding: "0.5rem 1rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "1.2rem" }}
-          >
-            ⟲
-          </button>
-        ) : null}
-        <button onClick={handleStop} style={{ backgroundColor: "#dc3545", color: "#fff", padding: "0.5rem 1rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "1.2rem" }}>
-          ◼
-        </button>
-        <button onClick={handleRecordButton} style={{ backgroundColor: "#dc3545", color: "#fff", padding: "0.5rem 1rem", borderRadius: "4px", border: "none", cursor: "pointer", fontSize: "1.2rem", animation: isRecording ? "blinkRecord 0.7s infinite" : "none" }}>
-          ⬤
-        </button>
-        <div style={{ display: "flex", alignItems: "center",fontSize: "0.5rem", gap: "0.3rem" }}>
+          </>
+        )}
+        <span style={{ flexBasis:"100%", height:0 }} />   {/* retour à la ligne */}
+        <div style={{ display: "flex", alignItems: "center",fontSize: "1.4rem", gap: "0.3rem", margin:"0 auto" }}>
           <span>Speed:</span>
           <input type="range" min="0.10" max="2" step="0.1" value={playbackSpeed} onChange={(e) => {
             const newSpeed = parseFloat(e.target.value);
             setPlaybackSpeed(newSpeed);
-          }} list="tickmarks" style={{ cursor: "pointer" }} />
+          }} list="tickmarks" style={{ cursor: "pointer", width: "50rem", }} />
           <datalist id="tickmarks">
             <option value="1" label="1"></option>
           </datalist>
           <span>{playbackSpeed.toFixed(1)}x</span>
         </div>
-        {recordedVideos.length > 0 && (
-          <div style={{ position: "relative", fontSize: "0.8rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <span>Recorded:</span>
-            <button
-              onClick={() => setDropdownOpen(!dropdownOpen)}
-              style={{ padding: "4px 8px", borderRadius: "4px", border: "1px solid #ccc", fontSize: "0.8rem", cursor: "pointer", width: "150px", whiteSpace: "nowrap" }}
-            >
-              {selectedRecordedName ? formatDisplay(selectedRecordedName) : "-- Select --"}
-            </button>
-            {dropdownOpen && (
-              <div style={{
-                position: "absolute",
-                top: "100%",
-                left: 0,
-                backgroundColor: "#fff",
-                border: "1px solid #ccc",
-                borderRadius: "4px",
-                zIndex: 100,
-                width: "100%"
-              }}>
-                {recordedVideos.map(rv => (
-                  <div key={rv.name} 
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      padding: "4px 8px",
-                      cursor: "pointer",
-                      borderBottom: "1px solid #eee",
-                      whiteSpace: "nowrap"
-                    }}
-                    onClick={() => { setSelectedRecordedName(rv.name); setDropdownOpen(false); sendToSecond({ type: "SHOW_RECORDED", url: rv.blobUrl, midiUrl: rv.midiUrl }); }}
-                  >
-                    <span onClick={(e) => { e.stopPropagation(); handleDeleteRecording(rv.name); }} style={{ cursor: "pointer", color: "red", marginRight: "4px" }}>x</span>
-                    <span>{formatDisplay(rv.name)}</span>
-                    <span 
-                      onClick={(e) => { e.stopPropagation(); openNoteModal(rv.name); }} 
-                      style={{ cursor: "pointer", fontSize: "16px" }}
-                    >
-                      📒
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+        <span style={{ flexBasis:"100%", height:0 }} />
 
         {/* ───── Layers toggles ───── */}
         <div style={{
@@ -2216,21 +2338,28 @@ const playRecordedMidi = () => {
           background:"#f1f1f1",padding:"0.25rem 0.6rem",
           borderRadius:"6px",border:"1px solid #ccc"
         }}>
-          <span style={{fontSize:"0.7rem",fontWeight:"bold"}}>LAYERS:</span>
+          <span style={{fontSize:"1.2rem",fontWeight:"bold"}}>LAYERS:</span>
 
           <div style={{display:"flex",alignItems:"center",gap:"0.3rem"}}>
             <IOSSwitch checked={showPianoRolls} onChange={togglePianoRolls}/>
-            <span style={{fontSize:"0.65rem"}}>Piano&nbsp;Rolls</span>
+            <span style={{fontSize:"1.2rem"}}>Piano&nbsp;Rolls</span>
           </div>
 
           <div style={{display:"flex",alignItems:"center",gap:"0.3rem"}}>
             <IOSSwitch checked={showHands} onChange={toggleHands}/>
-            <span style={{fontSize:"0.65rem"}}>Hands</span>
+            <span style={{fontSize:"1.2rem"}}>Hands</span>
           </div>
 
           <div style={{display:"flex",alignItems:"center",gap:"0.3rem"}}>
             <IOSSwitch checked={keysEnabled} onChange={toggleKeys}/>
-            <span style={{fontSize:"0.65rem"}}>Keys</span>
+            <span style={{fontSize:"1.2rem"}}>Keys</span>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:"0.3rem"}}>
+            <IOSSwitch
+              checked={showLooper}
+              onChange={() => setShowLooper(prev => !prev)}
+            />
+            <span style={{fontSize:"1.2rem"}}>Looper</span>
           </div>
         </div>
       </div>
@@ -2372,11 +2501,28 @@ const playRecordedMidi = () => {
         </Rnd>
       ) : null}
       <style jsx>{`
+        #controlBar{
+          transform: scale(1.5);       /* ×2 : texte, icônes, padding… */
+          transform-origin: top;     /* pivote depuis le haut pour ne pas décaler vers le bas */
+        }
         @keyframes blinkRecord {
           0% { background-color: #dc3545; }
           100% { background-color: rgb(167, 24, 38); }
         }
         datalist#tickmarks option { font-size: 2rem !important; }
+      `}</style>
+      <style jsx global>{`
+        /* double la taille de tous les boutons */
+        button{
+          font-size:2em;
+          padding:1rem 2rem;
+        }
+
+        /* double la taille des poignées de lecture de la timeline */
+        .play-handle{
+          transform:scale(1.5);         /* ×2 sans toucher le code du composant */
+          transform-origin:center 0;  /* pivot en haut */
+        }
       `}</style>
     </div>
   );
