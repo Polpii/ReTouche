@@ -1758,9 +1758,10 @@ const globalMidiHandler = (ev: MIDIMessageEvent) => {
   }
   
   // Envoyer immédiatement l’événement MIDI au port de sortie pour le jeu en direct
+  /*
   if (midiOutputRef.current) {
     midiOutputRef.current.send(ev.data);
-  }
+  }*/
   
   // Enregistrement global (bouton blanc)
   const ts = performance.now() - recordStartTimeRef.current;
