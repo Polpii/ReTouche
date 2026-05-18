@@ -12,9 +12,9 @@ Live deployment: **[retouche.vercel.app](https://retouche.vercel.app/)**
 
 ## Demo
 
-https://github.com/Polpii/ReTouche/raw/main/ReTouche_demo.mp4
+https://github.com/Polpii/ReTouche/raw/afterPilotTest/ReTouche_demo.mp4
 
-<video src="https://github.com/Polpii/ReTouche/raw/main/ReTouche_demo.mp4" controls width="720"></video>
+<video src="https://github.com/Polpii/ReTouche/raw/afterPilotTest/ReTouche_demo.mp4" controls width="720"></video>
 
 > If the player above does not render, [**download the demo video**](ReTouche_demo.mp4) (6.4 MB).
 
