@@ -1,4 +1,4 @@
-# ReTouche
+﻿# ReTouche
 
 > **Embodied Representations for Self-Directed Piano Learning**
 >
@@ -7,6 +7,16 @@
 > Developed at the Institute for Future Technologies and the Neuroscience Institute Paris.
 
 Live deployment: **[retouche.vercel.app](https://retouche.vercel.app/)**
+
+---
+
+## Demo
+
+https://github.com/Polpii/ReTouche/raw/main/ReTouche_demo.mp4
+
+<video src="https://github.com/Polpii/ReTouche/raw/main/ReTouche_demo.mp4" controls width="720"></video>
+
+> If the player above does not render, [**download the demo video**](ReTouche_demo.mp4) (6.4 MB).
 
 ---
 
